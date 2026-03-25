@@ -24,6 +24,7 @@ pub async fn run(args: ExpandArgs, config_path: Option<&Path>) -> Result<()> {
         })
         .await?;
     UsageStats::record(&response.usage)?;
-    println!("{}", safety::apply_warning(&response.content));
+    let normalized = safety::normalize_expand_output(&response.content)?;
+    println!("{}", safety::apply_warning(&normalized));
     Ok(())
 }

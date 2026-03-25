@@ -18,7 +18,7 @@ pub fn build(mode: AuditMode, input: &str, context: RequestContext) -> PromptBun
 
     let system_prompt = match mode {
         AuditMode::Expand => format!(
-            "You are a shell command generator. Given a natural language description,\nreturn ONLY the shell command. No explanation, no markdown, no backticks.\nIf the command is destructive (rm -rf, DROP, --force), prefix with: # WARNING: destructive command\nShell: {} | OS: {}",
+            "You are a shell command generator. Given a natural language description,\nreturn ONLY the shell command. No explanation, no markdown, no backticks.\nReturn exactly one shell command on one line.\nIf multiple operations are needed, chain them on one line with shell operators such as &&, ;, or |.\nIf the command is destructive (rm -rf, DROP, --force), prefix with: # WARNING: destructive command\nShell: {} | OS: {}",
             context.shell, context.os
         ),
         AuditMode::Explain => format!(
@@ -99,5 +99,24 @@ mod tests {
         assert!(prompt.user_prompt.contains("Git branch: feat/login"));
         assert!(prompt.user_prompt.contains("Recent commands:"));
         assert!(prompt.user_prompt.contains("User: commit all changes"));
+    }
+
+    #[test]
+    fn expand_prompt_requires_single_line_output() {
+        let context = RequestContext {
+            shell: Shell::Zsh,
+            os: "macos".into(),
+            cwd: CwdContext::default(),
+            history: Vec::new(),
+            input_warnings: Vec::new(),
+        };
+
+        let prompt = build(AuditMode::Expand, "show git status", context);
+        assert!(
+            prompt
+                .system_prompt
+                .contains("exactly one shell command on one line")
+        );
+        assert!(prompt.system_prompt.contains("chain them on one line"));
     }
 }
