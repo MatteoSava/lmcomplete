@@ -1,3 +1,4 @@
+mod ollama;
 mod openrouter;
 
 use anyhow::Result;
@@ -5,6 +6,7 @@ use async_trait::async_trait;
 
 use crate::config::Config;
 
+pub use ollama::OllamaProvider;
 pub use openrouter::OpenRouterProvider;
 
 #[derive(Debug, Clone)]
@@ -35,6 +37,7 @@ pub trait Provider: Send + Sync {
 pub fn build(config: &Config) -> Result<Box<dyn Provider>> {
     config.require_provider_config()?;
     match config.provider.name.as_str() {
+        "ollama" => Ok(Box::new(OllamaProvider::new(config.clone())?)),
         "openrouter" => Ok(Box::new(OpenRouterProvider::new(config.clone())?)),
         other => Err(anyhow::anyhow!("unsupported provider '{other}'")),
     }

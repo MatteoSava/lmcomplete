@@ -15,7 +15,7 @@ _lmc_default_config_path() {
 
 _lmc_missing_provider_message() {
   emulate -L zsh
-  print -r -- "Set OPENROUTER_API_KEY or configure $(_lmc_default_config_path)"
+  print -r -- "Set OPENROUTER_API_KEY or configure a provider in $(_lmc_default_config_path)"
 }
 
 _lmc_has_provider_config() {
@@ -27,6 +27,26 @@ _lmc_has_provider_config() {
 
   local config_path="$(_lmc_default_config_path)"
   [[ -r "$config_path" ]] || return 1
+
+  local provider_name=""
+  provider_name="$(
+    command awk '
+      /^[[:space:]]*\[provider\][[:space:]]*$/ { in_provider=1; next }
+      /^[[:space:]]*\[/ { in_provider=0 }
+      in_provider && /^[[:space:]]*name[[:space:]]*=/ {
+        split($0, parts, "=")
+        value = parts[2]
+        gsub(/^[[:space:]]*["\047]?/, "", value)
+        gsub(/["\047]?[[:space:]]*$/, "", value)
+        print value
+        exit
+      }
+    ' "$config_path"
+  )"
+
+  if [[ "$provider_name" == "ollama" ]]; then
+    return 0
+  fi
 
   command grep -Eq "^[[:space:]]*api_key[[:space:]]*=[[:space:]]*([\"'][^\"']+[\"'])" "$config_path"
 }

@@ -178,7 +178,7 @@ print -r -- "IN_FLIGHT=$_LMC_IN_FLIGHT"
         "stdout was: {stdout}"
     );
     assert!(
-        stdout.contains("MESSAGE=Set OPENROUTER_API_KEY or configure "),
+        stdout.contains("MESSAGE=Set OPENROUTER_API_KEY or configure a provider in "),
         "stdout was: {stdout}"
     );
     assert!(stdout.contains("IN_FLIGHT=0"), "stdout was: {stdout}");
@@ -260,6 +260,53 @@ print -r -- "POSTDISPLAY=$POSTDISPLAY"
         !postdisplay.contains("[lmc"),
         "postdisplay was: {postdisplay}"
     );
+}
+
+#[test]
+fn zsh_widget_accepts_ollama_config_without_api_key() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_dir = temp_dir.path().join(".config/lmcomplete");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        r#"
+[provider]
+name = "ollama"
+"#,
+    )
+    .unwrap();
+
+    let home = temp_dir.path().display();
+    let script = format!(
+        r#"
+export HOME="{home}"
+export XDG_CONFIG_HOME="{home}/.config"
+unset OPENROUTER_API_KEY
+zle() {{ :; }}
+bindkey() {{ :; }}
+source "{widget_path}"
+if _lmc_has_provider_config; then
+  print -r -- "CONFIGURED=1"
+else
+  print -r -- "CONFIGURED=0"
+fi
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("CONFIGURED=1"), "stdout was: {stdout}");
 }
 
 #[test]

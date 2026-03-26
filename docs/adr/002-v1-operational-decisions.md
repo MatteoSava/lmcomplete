@@ -185,6 +185,15 @@ base_url = "https://openrouter.ai/api/v1/chat/completions"
 [provider.fallback]
 name = "openrouter"
 model = "anthropic/claude-3.5-sonnet"
+```
+
+Local Ollama configurations use the same `[provider]` table:
+
+```toml
+[provider]
+name = "ollama"
+model = "qwen2.5-coder"
+base_url = "http://127.0.0.1:11434/api/chat"
 
 [history]
 max_entries = 10
@@ -212,7 +221,8 @@ enabled = true
 Config rules:
 
 - `config.toml` must be mode `0600` on Unix systems
-- `OPENROUTER_API_KEY` is supported
+- `OPENROUTER_API_KEY` is supported for the OpenRouter provider
+- `OLLAMA_API_KEY` is supported for Ollama endpoints that require bearer auth
 - Environment variables take precedence over file values
 - Missing config falls back to built-in defaults except for secrets
 

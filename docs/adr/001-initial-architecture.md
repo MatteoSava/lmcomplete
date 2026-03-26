@@ -36,7 +36,9 @@ Typing precise shell commands (git, curl, docker, kubectl, etc.) requires memori
 ### LLM backend
 
 - Trait-based provider abstraction (`Provider` trait with `complete()` method)
-- Initial provider: **OpenRouter** (targeting Groq models for speed)
+- Providers:
+  - **OpenRouter** for hosted models
+  - **Ollama** for fully local/offline models
 - Config in `~/.config/lmcomplete/config.toml`:
   ```toml
   [provider]
@@ -48,8 +50,14 @@ Typing precise shell commands (git, curl, docker, kubectl, etc.) requires memori
   name = "openrouter"
   model = "anthropic/claude-3.5-sonnet"
   ```
+- Local Ollama example:
+  ```toml
+  [provider]
+  name = "ollama"
+  model = "qwen2.5-coder"
+  base_url = "http://127.0.0.1:11434/api/chat"
+  ```
 - Adding a new provider = implement the trait, register in factory
-- Future: ollama for fully local/offline use
 
 ### Architecture (high-level)
 
@@ -65,7 +73,7 @@ lmc CLI (clap)
   ├── provider/
   │   ├── mod.rs         — Provider trait
   │   ├── openrouter.rs  — OpenRouter/Groq implementation
-  │   └── ollama.rs      — (future) local model support
+  │   └── ollama.rs      — local model support
   ├── prompt/
   │   └── builder.rs     — assemble system prompt + context + user input
   ├── shell/

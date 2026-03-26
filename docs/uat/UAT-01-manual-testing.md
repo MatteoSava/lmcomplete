@@ -36,7 +36,7 @@ The current v1 surface is:
 Before starting, make sure you have:
 
 - Rust and Cargo installed
-- a valid `OPENROUTER_API_KEY` for live LLM tests
+- either a valid `OPENROUTER_API_KEY` or a local Ollama server with a pulled model
 - zsh installed for shell widget testing
 - network access for live `expand` and `explain`
 
@@ -54,10 +54,19 @@ Expected result:
 - the project builds successfully
 - the automated test suite passes
 
-For live provider tests, export an API key:
+For hosted provider tests, export an API key:
 
 ```sh
 export OPENROUTER_API_KEY="your-key-here"
+```
+
+For local provider tests, create a config file:
+
+```toml
+[provider]
+name = "ollama"
+model = "qwen2.5-coder"
+base_url = "http://127.0.0.1:11434/api/chat"
 ```
 
 Optional: build the binary once and use it directly:
