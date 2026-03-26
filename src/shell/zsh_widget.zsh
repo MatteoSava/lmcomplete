@@ -40,15 +40,14 @@ _lmc_loading_indicator() {
   emulate -L zsh
   local frame="${1:-▌}"
   local accent=$'\033[38;5;117m'
-  local grey=$'\033[38;5;245m'
   local reset=$'\033[0m'
-  print -nr -- " ${accent}${frame}${reset} ${grey}lmc${reset}"
+  print -nr -- $'\t'"${accent}${frame}${reset}"
 }
 
 _lmc_loading_message() {
   emulate -L zsh
   local frame="${1:-▌}"
-  print -r -- "[lmc ${frame}]"
+  print -r -- "[${frame}]"
 }
 
 _lmc_error_message() {

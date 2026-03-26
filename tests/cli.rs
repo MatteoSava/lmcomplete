@@ -607,7 +607,8 @@ print -r -- "MESSAGE=$LAST_MESSAGE"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("MESSAGE=[lmc "), "stdout was: {stdout}");
+    assert!(stdout.contains("MESSAGE=["), "stdout was: {stdout}");
+    assert!(!stdout.contains("MESSAGE=[lmc "), "stdout was: {stdout}");
 }
 
 #[test]
@@ -665,13 +666,13 @@ command rm -f -- "$fifo"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("MESSAGE=[lmc .. ]"), "stdout was: {stdout}");
+    assert!(stdout.contains("MESSAGE=[.. ]"), "stdout was: {stdout}");
     assert!(stdout.contains("RESET=0"), "stdout was: {stdout}");
     assert!(stdout.contains("REDRAW=1"), "stdout was: {stdout}");
 }
 
 #[test]
-fn zsh_widget_loading_indicator_places_cursor_before_label() {
+fn zsh_widget_loading_indicator_appends_tabbed_cursor_without_label() {
     let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
 
     let script = format!(
@@ -715,14 +716,16 @@ print -r -- "MESSAGE=$LAST_MESSAGE"
         .find_map(|line| line.strip_prefix("POSTDISPLAY="))
         .expect("expected postdisplay output");
 
-    let cursor_idx = postdisplay.find("▍").expect("missing cursor frame");
-    let label_idx = postdisplay.find("lmc").expect("missing lmc label");
-    assert!(cursor_idx < label_idx, "postdisplay was: {postdisplay}");
     assert!(
-        !postdisplay.contains("[lmc"),
+        postdisplay.starts_with('\t'),
+        "postdisplay was: {postdisplay:?}"
+    );
+    assert!(postdisplay.contains("▍"), "postdisplay was: {postdisplay}");
+    assert!(
+        !postdisplay.contains("lmc"),
         "postdisplay was: {postdisplay}"
     );
-    assert!(stdout.contains("MESSAGE=[lmc ▍]"), "stdout was: {stdout}");
+    assert!(stdout.contains("MESSAGE=[▍]"), "stdout was: {stdout}");
 }
 
 #[test]
