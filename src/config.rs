@@ -7,14 +7,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-const OPENROUTER_PROVIDER: &str = "openrouter";
-const OLLAMA_PROVIDER: &str = "ollama";
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub provider: ProviderConfig,
     pub history: HistoryConfig,
+    pub streaming: StreamingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -40,13 +38,10 @@ pub struct HistoryConfig {
     pub max_entries: usize,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            provider: ProviderConfig::default(),
-            history: HistoryConfig::default(),
-        }
-    }
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct StreamingConfig {
+    pub enabled: bool,
 }
 
 impl Default for ProviderConfig {
@@ -54,8 +49,8 @@ impl Default for ProviderConfig {
         Self {
             name: default_provider_name(),
             api_key: None,
-            model: default_openrouter_model(),
-            base_url: default_openrouter_base_url(),
+            model: default_model(),
+            base_url: default_base_url(),
             fallback: Some(FallbackProviderConfig::default()),
         }
     }
@@ -73,6 +68,12 @@ impl Default for FallbackProviderConfig {
 impl Default for HistoryConfig {
     fn default() -> Self {
         Self { max_entries: 20 }
+    }
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -94,7 +95,6 @@ impl Config {
             .with_context(|| format!("failed to read config file {}", path.display()))?;
         let mut config: Self = toml::from_str(&raw)
             .with_context(|| format!("failed to parse config file {}", path.display()))?;
-        config.normalize_provider_defaults(provider_field_presence(&raw)?);
         config.apply_env_overrides();
         Ok(config)
     }
@@ -104,72 +104,44 @@ impl Config {
     }
 
     pub fn require_provider_config(&self) -> Result<()> {
-        match self.provider.name.as_str() {
-            OPENROUTER_PROVIDER => {
-                if self.provider_api_key().is_none() {
-                    bail!(
-                        "missing provider API key; set OPENROUTER_API_KEY or configure {}",
-                        default_config_path().display()
-                    );
-                }
-                self.require_matching_fallback(OPENROUTER_PROVIDER)
-            }
-            OLLAMA_PROVIDER => self.require_matching_fallback(OLLAMA_PROVIDER),
-            other => bail!(
-                "unsupported provider '{}'; supported providers: 'openrouter', 'ollama'",
-                other
-            ),
-        }
-    }
-
-    fn apply_env_overrides(&mut self) {
-        let env_var = match self.provider.name.as_str() {
-            OLLAMA_PROVIDER => "OLLAMA_API_KEY",
-            _ => "OPENROUTER_API_KEY",
-        };
-
-        if self.provider.api_key.is_none()
-            && let Ok(value) = std::env::var(env_var)
-            && !value.trim().is_empty()
-        {
-            self.provider.api_key = Some(value);
-        }
-    }
-
-    fn normalize_provider_defaults(&mut self, fields: ProviderFieldPresence) {
-        if self.provider.name != OLLAMA_PROVIDER {
-            return;
+        if self.provider.name != "openrouter" {
+            bail!(
+                "unsupported provider '{}'; only 'openrouter' is implemented in v1",
+                self.provider.name
+            );
         }
 
-        if !fields.model {
-            self.provider.model = default_ollama_model();
+        if self.provider_api_key().is_none() {
+            bail!(
+                "missing provider API key; set OPENROUTER_API_KEY or configure {}",
+                default_config_path().display()
+            );
         }
-        if !fields.base_url {
-            self.provider.base_url = default_ollama_base_url();
-        }
-        if !fields.fallback {
-            self.provider.fallback = None;
-        }
-    }
 
-    fn require_matching_fallback(&self, provider_name: &str) -> Result<()> {
         if let Some(fallback) = &self.provider.fallback
-            && fallback.name != provider_name
+            && fallback.name != "openrouter"
         {
             bail!(
-                "unsupported fallback provider '{}' for '{}'; fallback provider must also be '{}'",
-                fallback.name,
-                provider_name,
-                provider_name
+                "unsupported fallback provider '{}'; only 'openrouter' is implemented in v1",
+                fallback.name
             );
         }
 
         Ok(())
     }
+
+    fn apply_env_overrides(&mut self) {
+        if self.provider.api_key.is_none()
+            && let Ok(value) = std::env::var("OPENROUTER_API_KEY")
+            && !value.trim().is_empty()
+        {
+            self.provider.api_key = Some(value);
+        }
+    }
 }
 
 pub fn default_config_path() -> PathBuf {
-    project_dirs().config_dir().join("config.toml")
+    resolve_config_dir(env_path("XDG_CONFIG_HOME"), env_path("HOME")).join("config.toml")
 }
 
 pub fn state_dir() -> PathBuf {
@@ -185,45 +157,34 @@ fn project_dirs() -> ProjectDirs {
         .expect("lmcomplete should always resolve platform config directories")
 }
 
+fn resolve_config_dir(xdg_config_home: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = xdg_config_home {
+        return path.join("lmcomplete");
+    }
+
+    if let Some(path) = home {
+        return path.join(".config").join("lmcomplete");
+    }
+
+    project_dirs().config_dir().to_path_buf()
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 fn default_provider_name() -> String {
-    OPENROUTER_PROVIDER.to_string()
+    "openrouter".to_string()
 }
 
-fn default_openrouter_model() -> String {
-    "meta-llama/llama-4-scout".to_string()
+fn default_model() -> String {
+    "openai/gpt-oss-120b:groq".to_string()
 }
 
-fn default_openrouter_base_url() -> String {
+fn default_base_url() -> String {
     "https://openrouter.ai/api/v1/chat/completions".to_string()
-}
-
-fn default_ollama_model() -> String {
-    "qwen2.5-coder".to_string()
-}
-
-fn default_ollama_base_url() -> String {
-    "http://127.0.0.1:11434/api/chat".to_string()
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct ProviderFieldPresence {
-    model: bool,
-    base_url: bool,
-    fallback: bool,
-}
-
-fn provider_field_presence(raw: &str) -> Result<ProviderFieldPresence> {
-    let value: toml::Value =
-        toml::from_str(raw).context("failed to inspect config structure for provider defaults")?;
-    let Some(table) = value.get("provider").and_then(toml::Value::as_table) else {
-        return Ok(ProviderFieldPresence::default());
-    };
-
-    Ok(ProviderFieldPresence {
-        model: table.contains_key("model"),
-        base_url: table.contains_key("base_url"),
-        fallback: table.contains_key("fallback"),
-    })
 }
 
 fn validate_permissions(path: &Path) -> Result<()> {
@@ -249,8 +210,9 @@ fn validate_permissions(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, default_ollama_base_url, default_ollama_model};
+    use super::{Config, resolve_config_dir};
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     #[test]
@@ -291,63 +253,17 @@ model = "model-x"
     }
 
     #[test]
-    fn loads_ollama_defaults_when_provider_selected() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-[provider]
-name = "ollama"
-"#,
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
-        }
-
-        let config = Config::load(Some(&config_path)).unwrap();
-        assert_eq!(config.provider.name, "ollama");
-        assert_eq!(config.provider.model, default_ollama_model());
-        assert_eq!(config.provider.base_url, default_ollama_base_url());
-        assert!(config.provider.fallback.is_none());
+    fn prefers_xdg_config_home_for_default_config_dir() {
+        let dir = resolve_config_dir(
+            Some(PathBuf::from("/tmp/custom-config")),
+            Some(PathBuf::from("/Users/tester")),
+        );
+        assert_eq!(dir, PathBuf::from("/tmp/custom-config/lmcomplete"));
     }
 
     #[test]
-    fn ollama_provider_can_use_env_api_key() {
-        let dir = tempdir().unwrap();
-        let config_path = dir.path().join("config.toml");
-        fs::write(
-            &config_path,
-            r#"
-[provider]
-name = "ollama"
-"#,
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
-        }
-
-        unsafe { std::env::set_var("OLLAMA_API_KEY", "ollama-env-key") };
-        let config = Config::load(Some(&config_path)).unwrap();
-        unsafe { std::env::remove_var("OLLAMA_API_KEY") };
-
-        assert_eq!(config.provider_api_key(), Some("ollama-env-key"));
-    }
-
-    #[test]
-    fn ollama_provider_does_not_require_an_api_key() {
-        let mut config = Config::default();
-        config.provider.name = "ollama".to_string();
-        config.provider.model = default_ollama_model();
-        config.provider.base_url = default_ollama_base_url();
-        config.provider.fallback = None;
-
-        config.require_provider_config().unwrap();
+    fn falls_back_to_home_config_dir_when_xdg_config_home_is_missing() {
+        let dir = resolve_config_dir(None, Some(PathBuf::from("/Users/tester")));
+        assert_eq!(dir, PathBuf::from("/Users/tester/.config/lmcomplete"));
     }
 }

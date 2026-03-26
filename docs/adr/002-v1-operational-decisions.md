@@ -178,22 +178,13 @@ The supported schema is:
 ```toml
 [provider]
 name = "openrouter"
-model = "meta-llama/llama-4-scout"
+model = "openai/gpt-oss-120b:groq"
 api_key = "sk-..."
 base_url = "https://openrouter.ai/api/v1/chat/completions"
 
 [provider.fallback]
 name = "openrouter"
 model = "anthropic/claude-3.5-sonnet"
-```
-
-Local Ollama configurations use the same `[provider]` table:
-
-```toml
-[provider]
-name = "ollama"
-model = "qwen2.5-coder"
-base_url = "http://127.0.0.1:11434/api/chat"
 
 [history]
 max_entries = 10
@@ -221,8 +212,7 @@ enabled = true
 Config rules:
 
 - `config.toml` must be mode `0600` on Unix systems
-- `OPENROUTER_API_KEY` is supported for the OpenRouter provider
-- `OLLAMA_API_KEY` is supported for Ollama endpoints that require bearer auth
+- `OPENROUTER_API_KEY` is supported
 - Environment variables take precedence over file values
 - Missing config falls back to built-in defaults except for secrets
 
@@ -428,12 +418,13 @@ auto_suggest = true
 
 Set `auto_suggest = false` to disable the `precmd` hook trigger. Explicit `lmc fix` always works.
 
-### 18. Streaming response in widget
+### 18. Streaming response in CLI and widget
 
-Use the OpenRouter streaming API (`"stream": true`) for `expand` and `fix` commands when invoked from the ZLE widget.
+Use the OpenRouter streaming API (`"stream": true`) for interactive `expand` and `explain` invocations.
 
-- Tokens stream into BUFFER progressively via `zle -R` (redisplay)
-- User sees the command building character-by-character
+- Direct CLI invocations stream to the terminal when stdout is a TTY
+- The zsh widget streams preview updates into BUFFER progressively via `zle -R`
+- `expand` previews are normalized as they arrive, then finalized through the safety pipeline
 - First token typically appears in ~200ms vs ~800ms for full response
 - If user presses any key during streaming, streaming is cancelled and the partial content remains in BUFFER
 - Non-streaming fallback for providers that don't support SSE

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 160" role="img" aria-labelledby="title desc" style="color:#121416">
+  <title id="title">lmcomplete wordmark</title>
+  <desc id="desc">Wordmark for lmcomplete set in a restrained neo-grotesk style.</desc>
+  <text
+    x="0"
+    y="112"
+    fill="currentColor"
+    font-family="Avenir Next, IBM Plex Sans, Helvetica Neue, Arial, sans-serif"
+    font-size="88"
+    font-weight="600"
+    letter-spacing="-2.5"
+    text-rendering="geometricPrecision"
+  >lmcomplete</text>
+</svg>

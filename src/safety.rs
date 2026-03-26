@@ -63,13 +63,49 @@ pub fn normalize_expand_output(output: &str) -> Result<String> {
     }
 }
 
+pub fn preview_expand_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let mut warning = false;
+    let mut body = Vec::new();
+
+    if let Some(first_line) = lines.next() {
+        if first_line == "# WARNING: destructive command" {
+            warning = true;
+        } else {
+            body.push(normalize_segment(first_line));
+        }
+    }
+
+    body.extend(lines.map(normalize_segment));
+
+    let command = body
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    match (warning, command.is_empty()) {
+        (true, true) => "# WARNING: destructive command".to_string(),
+        (true, false) => format!("# WARNING: destructive command {command}"),
+        (false, _) => command,
+    }
+}
+
 fn normalize_segment(segment: &str) -> String {
     segment.replace('\t', " ").trim().to_string()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_warning, normalize_expand_output};
+    use super::{apply_warning, normalize_expand_output, preview_expand_output};
 
     #[test]
     fn prefixes_destructive_commands() {
@@ -106,5 +142,16 @@ mod tests {
     fn rejects_warning_without_command() {
         let error = normalize_expand_output("# WARNING: destructive command").unwrap_err();
         assert!(error.to_string().contains("warning without a command"));
+    }
+
+    #[test]
+    fn previews_partial_expand_output() {
+        let output = preview_expand_output(
+            "# WARNING: destructive command\n\n git add -A &&\n\tgit push origin main\n",
+        );
+        assert_eq!(
+            output,
+            "# WARNING: destructive command git add -A && git push origin main"
+        );
     }
 }

@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -31,6 +32,8 @@ pub struct ExpandArgs {
     pub shell: Option<Shell>,
     #[arg(long, value_name = "N")]
     pub history: Option<usize>,
+    #[arg(long, value_enum, hide = true, default_value = "auto")]
+    pub stream_format: StreamFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -41,6 +44,8 @@ pub struct ExplainArgs {
     pub shell: Option<Shell>,
     #[arg(long, value_name = "N")]
     pub history: Option<usize>,
+    #[arg(long, value_enum, hide = true, default_value = "auto")]
+    pub stream_format: StreamFormat,
 }
 
 #[derive(Debug, Clone, Args)]
@@ -70,6 +75,42 @@ pub enum AuditMode {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
 pub enum InitShell {
     Zsh,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+pub enum StreamFormat {
+    Auto,
+    Off,
+    Tty,
+    Widget,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ActiveStreamFormat {
+    Off,
+    Tty,
+    Widget,
+}
+
+impl StreamFormat {
+    pub fn resolve(self, streaming_enabled: bool) -> ActiveStreamFormat {
+        if !streaming_enabled {
+            return ActiveStreamFormat::Off;
+        }
+
+        match self {
+            Self::Auto => {
+                if std::io::stdout().is_terminal() {
+                    ActiveStreamFormat::Tty
+                } else {
+                    ActiveStreamFormat::Off
+                }
+            }
+            Self::Off => ActiveStreamFormat::Off,
+            Self::Tty => ActiveStreamFormat::Tty,
+            Self::Widget => ActiveStreamFormat::Widget,
+        }
+    }
 }
 
 pub fn parse() -> Cli {
@@ -115,6 +156,7 @@ fn is_passthrough_flag(token: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::normalize_args;
+    use super::{ActiveStreamFormat, StreamFormat};
     use std::ffi::OsString;
 
     fn as_strings(args: &[OsString]) -> Vec<String> {
@@ -161,6 +203,20 @@ mod tests {
                 "expand",
                 "commit this file"
             ]
+        );
+    }
+
+    #[test]
+    fn disables_streaming_globally() {
+        assert_eq!(StreamFormat::Tty.resolve(false), ActiveStreamFormat::Off);
+        assert_eq!(StreamFormat::Widget.resolve(false), ActiveStreamFormat::Off);
+    }
+
+    #[test]
+    fn widget_streaming_resolves_without_tty() {
+        assert_eq!(
+            StreamFormat::Widget.resolve(true),
+            ActiveStreamFormat::Widget
         );
     }
 }

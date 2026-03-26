@@ -1,4 +1,9 @@
 /target/
+.omc/
+/linux/
+/video/node_modules/
+/video/out/
+/video/.remotion/
 
 # macOS
 .DS_Store

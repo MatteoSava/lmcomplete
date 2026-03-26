@@ -1,4 +1,3 @@
-mod ollama;
 mod openrouter;
 
 use anyhow::Result;
@@ -6,7 +5,6 @@ use async_trait::async_trait;
 
 use crate::config::Config;
 
-pub use ollama::OllamaProvider;
 pub use openrouter::OpenRouterProvider;
 
 #[derive(Debug, Clone)]
@@ -29,33 +27,23 @@ pub struct CompletionResponse {
     pub usage: Usage,
 }
 
-pub type ChunkCallback<'a> = dyn FnMut(&str) -> Result<()> + Send + 'a;
+pub trait CompletionEventHandler: Send {
+    fn on_content(&mut self, content: &str) -> Result<()>;
+}
 
 #[async_trait]
 pub trait Provider: Send + Sync {
-    async fn complete_stream(
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+    async fn stream(
         &self,
         request: CompletionRequest,
-        on_chunk: &mut ChunkCallback<'_>,
+        handler: &mut dyn CompletionEventHandler,
     ) -> Result<CompletionResponse>;
-
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        let mut streamed = String::new();
-        let response = self
-            .complete_stream(request, &mut |chunk| {
-                streamed.push_str(chunk);
-                Ok(())
-            })
-            .await?;
-        debug_assert_eq!(response.content, streamed);
-        Ok(response)
-    }
 }
 
 pub fn build(config: &Config) -> Result<Box<dyn Provider>> {
     config.require_provider_config()?;
     match config.provider.name.as_str() {
-        "ollama" => Ok(Box::new(OllamaProvider::new(config.clone())?)),
         "openrouter" => Ok(Box::new(OpenRouterProvider::new(config.clone())?)),
         other => Err(anyhow::anyhow!("unsupported provider '{other}'")),
     }
