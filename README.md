@@ -85,19 +85,7 @@ You can also point at a specific file:
 lmc --config /path/to/config.toml stats
 ```
 
-Minimal config:
-
-```toml
-[provider]
-name = "openrouter"
-model = "openai/gpt-oss-120b:groq"
-
-[history]
-max_entries = 20
-
-[streaming]
-enabled = true
-```
+The canonical documented example lives in [`docs/config.example.toml`](docs/config.example.toml).
 
 Set the API key in the environment or in config:
 

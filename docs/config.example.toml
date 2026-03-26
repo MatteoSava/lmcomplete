@@ -1,0 +1,31 @@
+# Canonical lmcomplete config example.
+# Default path: ~/.config/lmcomplete/config.toml
+# If XDG_CONFIG_HOME is set, lmc uses $XDG_CONFIG_HOME/lmcomplete/config.toml.
+#
+# If you store an API key in this file, keep it private.
+# On Unix, lmc expects the file mode to be 0600.
+
+[provider]
+# Only "openrouter" is supported in v1.
+name = "openrouter"
+
+# Prefer OPENROUTER_API_KEY in the environment when possible.
+# api_key = "sk-or-v1-..."
+
+model = "openai/gpt-oss-120b:groq"
+base_url = "https://openrouter.ai/api/v1/chat/completions"
+
+[provider.fallback]
+# Only "openrouter" is supported in v1.
+name = "openrouter"
+model = "anthropic/claude-3.5-sonnet"
+
+[history]
+max_entries = 20
+
+[expand]
+response_mode = "tool_call"
+explain_display = "both"
+
+[streaming]
+enabled = true

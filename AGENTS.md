@@ -24,6 +24,13 @@
 - Prefer extending existing patterns over introducing new architecture.
 - If CLI output or UX changes, update tests and any affected docs or help text.
 
+## Config Documentation
+
+- Treat `docs/config.example.toml` as the canonical user-facing config reference.
+- When config fields, defaults, or validation rules change, update `docs/config.example.toml` in the same diff.
+- Keep `README.md` and docs pointing at the canonical example instead of duplicating full schema blocks.
+- Add or update a test that parses the canonical example with the real config types.
+
 ## Bug Workflow
 
 - When a bug is reported, do not start with a fix.

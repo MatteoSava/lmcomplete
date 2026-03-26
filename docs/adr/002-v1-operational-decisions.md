@@ -174,45 +174,7 @@ All outbound user input and gathered context must pass through the same redactio
 
 V1 configuration is TOML at `~/.config/lmcomplete/config.toml`.
 
-The supported schema is:
-
-```toml
-[provider]
-name = "openrouter"
-model = "openai/gpt-oss-120b:groq"
-api_key = "sk-..."
-base_url = "https://openrouter.ai/api/v1/chat/completions"
-
-[provider.fallback]
-name = "openrouter"
-model = "anthropic/claude-3.5-sonnet"
-
-[history]
-max_entries = 10
-max_line_chars = 120
-output_entries = 2
-max_output_chars = 500
-
-[expand]
-response_mode = "tool_call"
-explain_display = "both"
-
-[request]
-timeout_ms = 1500
-fallback_timeout_ms = 1500
-
-[context]
-max_prompt_chars = 4000
-
-[agent]
-command = "claude -p"
-
-[fix]
-auto_suggest = true
-
-[streaming]
-enabled = true
-```
+The canonical user-facing example is `docs/config.example.toml`. Keep that file aligned with the parser instead of duplicating schema blocks in prose docs.
 
 Config rules:
 

@@ -306,6 +306,27 @@ explain_display = "inline"
     }
 
     #[test]
+    fn documented_config_example_parses() {
+        let config: Config = toml::from_str(include_str!("../docs/config.example.toml")).unwrap();
+
+        assert_eq!(config.provider.name, "openrouter");
+        assert_eq!(config.provider.model, "openai/gpt-oss-120b:groq");
+        assert_eq!(
+            config.provider.base_url,
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+
+        let fallback = config.provider.fallback.as_ref().unwrap();
+        assert_eq!(fallback.name, "openrouter");
+        assert_eq!(fallback.model, "anthropic/claude-3.5-sonnet");
+
+        assert_eq!(config.history.max_entries, 20);
+        assert_eq!(config.expand.response_mode, ExpandResponseMode::ToolCall);
+        assert_eq!(config.expand.explain_display, ExplainDisplay::Both);
+        assert!(config.streaming.enabled);
+    }
+
+    #[test]
     fn prefers_xdg_config_home_for_default_config_dir() {
         let dir = resolve_config_dir(
             Some(PathBuf::from("/tmp/custom-config")),
