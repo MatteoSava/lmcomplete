@@ -2,6 +2,7 @@ pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod context;
+#[cfg(test)]
 mod output;
 pub mod prompt;
 pub mod provider;
