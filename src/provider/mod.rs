@@ -29,9 +29,27 @@ pub struct CompletionResponse {
     pub usage: Usage,
 }
 
+pub type ChunkCallback<'a> = dyn FnMut(&str) -> Result<()> + Send + 'a;
+
 #[async_trait]
 pub trait Provider: Send + Sync {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        on_chunk: &mut ChunkCallback<'_>,
+    ) -> Result<CompletionResponse>;
+
+    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
+        let mut streamed = String::new();
+        let response = self
+            .complete_stream(request, &mut |chunk| {
+                streamed.push_str(chunk);
+                Ok(())
+            })
+            .await?;
+        debug_assert_eq!(response.content, streamed);
+        Ok(response)
+    }
 }
 
 pub fn build(config: &Config) -> Result<Box<dyn Provider>> {

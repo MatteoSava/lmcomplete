@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 
-use super::{CompletionRequest, CompletionResponse, Provider, Usage};
+use super::{ChunkCallback, CompletionRequest, CompletionResponse, Provider, Usage};
 
 pub struct OpenRouterProvider {
     client: reqwest::Client,
@@ -46,12 +46,74 @@ impl OpenRouterProvider {
         })
     }
 
-    async fn complete_with_model(
+    async fn complete_stream_with_model(
         &self,
         model: &str,
         request: &CompletionRequest,
+        on_chunk: &mut ChunkCallback<'_>,
     ) -> Result<CompletionResponse> {
-        let body = OpenRouterRequest {
+        let body = self.build_request(model, request, true);
+
+        let mut response = self
+            .client
+            .post(&self.endpoint)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("failed to send request to OpenRouter")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let raw = response
+                .text()
+                .await
+                .context("failed to read OpenRouter response body")?;
+            bail!("OpenRouter returned {status}: {raw}");
+        }
+
+        let mut content = String::new();
+        let mut usage = Usage::default();
+        let mut buffer = Vec::new();
+
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("failed to read OpenRouter streaming response body")?
+        {
+            buffer.extend_from_slice(&chunk);
+
+            while let Some(event) = next_sse_event(&mut buffer) {
+                if process_sse_event(&event, &mut content, &mut usage, on_chunk)? {
+                    if content.trim().is_empty() {
+                        bail!("OpenRouter returned an empty completion");
+                    }
+
+                    return Ok(CompletionResponse { content, usage });
+                }
+            }
+        }
+
+        while let Some(event) = take_trailing_sse_event(&mut buffer) {
+            if process_sse_event(&event, &mut content, &mut usage, on_chunk)? {
+                break;
+            }
+        }
+
+        if content.trim().is_empty() {
+            bail!("OpenRouter returned an empty completion");
+        }
+
+        Ok(CompletionResponse { content, usage })
+    }
+
+    fn build_request<'a>(
+        &self,
+        model: &'a str,
+        request: &CompletionRequest,
+        stream: bool,
+    ) -> OpenRouterRequest<'a> {
+        OpenRouterRequest {
             model,
             messages: vec![
                 Message {
@@ -65,55 +127,40 @@ impl OpenRouterProvider {
             ],
             max_tokens: Some(256),
             temperature: Some(0.1),
-        };
-
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .context("failed to send request to OpenRouter")?;
-
-        let status = response.status();
-        let raw = response
-            .text()
-            .await
-            .context("failed to read OpenRouter response body")?;
-
-        if !status.is_success() {
-            bail!("OpenRouter returned {status}: {raw}");
+            stream: if stream { Some(true) } else { None },
         }
-
-        let parsed: OpenRouterResponse =
-            serde_json::from_str(&raw).context("failed to parse OpenRouter response")?;
-        let content = parsed
-            .choices
-            .into_iter()
-            .next()
-            .map(|choice| choice.message.content.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("OpenRouter returned an empty completion"))?;
-
-        Ok(CompletionResponse {
-            content,
-            usage: parsed.usage.unwrap_or_default().into(),
-        })
     }
 }
 
 #[async_trait]
 impl Provider for OpenRouterProvider {
-    async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
-        match self.complete_with_model(&self.model, &request).await {
+    async fn complete_stream(
+        &self,
+        request: CompletionRequest,
+        on_chunk: &mut ChunkCallback<'_>,
+    ) -> Result<CompletionResponse> {
+        let mut primary_emitted = false;
+        match self
+            .complete_stream_with_model(&self.model, &request, &mut |chunk| {
+                primary_emitted = true;
+                on_chunk(chunk)
+            })
+            .await
+        {
             Ok(response) => Ok(response),
             Err(primary_error) => {
                 let Some(fallback_model) = &self.fallback_model else {
                     return Err(primary_error);
                 };
 
-                self.complete_with_model(fallback_model, &request)
+                if primary_emitted {
+                    return Err(primary_error.context(format!(
+                        "primary model '{}' failed after streaming output; fallback model '{}' was not attempted",
+                        self.model, fallback_model
+                    )));
+                }
+
+                self.complete_stream_with_model(fallback_model, &request, on_chunk)
                     .await
                     .with_context(|| {
                         format!(
@@ -132,6 +179,8 @@ struct OpenRouterRequest<'a> {
     messages: Vec<Message>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -141,19 +190,25 @@ struct Message {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterResponse {
-    choices: Vec<OpenRouterChoice>,
+struct OpenRouterStreamChunk {
+    choices: Vec<OpenRouterStreamChoice>,
     usage: Option<OpenRouterUsage>,
+    error: Option<OpenRouterStreamError>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChoice {
-    message: OpenRouterMessage,
+struct OpenRouterStreamChoice {
+    delta: Option<OpenRouterDelta>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterMessage {
-    content: String,
+struct OpenRouterDelta {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterStreamError {
+    message: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -175,9 +230,111 @@ impl From<OpenRouterUsage> for Usage {
     }
 }
 
+fn process_sse_event(
+    event: &[u8],
+    content: &mut String,
+    usage: &mut Usage,
+    on_chunk: &mut ChunkCallback<'_>,
+) -> Result<bool> {
+    let text =
+        std::str::from_utf8(event).context("OpenRouter returned invalid UTF-8 in SSE event")?;
+    let mut data_lines = Vec::new();
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+
+        if let Some(data) = line.strip_prefix("data:") {
+            data_lines.push(data.trim_start());
+        }
+    }
+
+    if data_lines.is_empty() {
+        return Ok(false);
+    }
+
+    let payload = data_lines.join("\n");
+    if payload == "[DONE]" {
+        return Ok(true);
+    }
+
+    let parsed: OpenRouterStreamChunk =
+        serde_json::from_str(&payload).context("failed to parse OpenRouter stream chunk")?;
+    if let Some(error) = parsed.error {
+        bail!("OpenRouter stream error: {}", error.message);
+    }
+
+    if let Some(chunk_usage) = parsed.usage {
+        *usage = chunk_usage.into();
+    }
+
+    for choice in parsed.choices {
+        let Some(delta) = choice.delta else {
+            continue;
+        };
+        let Some(chunk) = delta.content else {
+            continue;
+        };
+        if chunk.is_empty() {
+            continue;
+        }
+        content.push_str(&chunk);
+        on_chunk(&chunk)?;
+    }
+
+    Ok(false)
+}
+
+fn next_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let (index, separator_len) = sse_event_boundary(buffer)?;
+    let event = buffer[..index].to_vec();
+    buffer.drain(..index + separator_len);
+    Some(event)
+}
+
+fn take_trailing_sse_event(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
+    if buffer.is_empty() || buffer.iter().all(u8::is_ascii_whitespace) {
+        buffer.clear();
+        return None;
+    }
+
+    let event = buffer.clone();
+    buffer.clear();
+    Some(event)
+}
+
+fn sse_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
+    let mut index = 0;
+
+    while index + 1 < buffer.len() {
+        if buffer[index] == b'\n' && buffer[index + 1] == b'\n' {
+            return Some((index, 2));
+        }
+
+        if index + 3 < buffer.len()
+            && buffer[index] == b'\r'
+            && buffer[index + 1] == b'\n'
+            && buffer[index + 2] == b'\r'
+            && buffer[index + 3] == b'\n'
+        {
+            return Some((index, 4));
+        }
+
+        if buffer[index] == b'\r' && buffer[index + 1] == b'\r' {
+            return Some((index, 2));
+        }
+
+        index += 1;
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
-    use super::OpenRouterUsage;
+    use super::{OpenRouterUsage, next_sse_event, process_sse_event};
     use crate::provider::Usage;
 
     #[test]
@@ -190,5 +347,51 @@ mod tests {
         });
         assert_eq!(usage.total_tokens, Some(30));
         assert_eq!(usage.cost, Some(0.42));
+    }
+
+    #[test]
+    fn extracts_sse_events() {
+        let mut buffer = b"data: one\n\ndata: two\r\n\r\n".to_vec();
+
+        let first = next_sse_event(&mut buffer).unwrap();
+        let second = next_sse_event(&mut buffer).unwrap();
+
+        assert_eq!(String::from_utf8(first).unwrap(), "data: one");
+        assert_eq!(String::from_utf8(second).unwrap(), "data: two");
+    }
+
+    #[test]
+    fn ignores_comments_and_collects_usage() {
+        let mut content = String::new();
+        let mut usage = Usage::default();
+        let mut rendered = String::new();
+
+        let done = process_sse_event(
+            b": OPENROUTER PROCESSING",
+            &mut content,
+            &mut usage,
+            &mut |chunk| {
+                rendered.push_str(chunk);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(!done);
+
+        let done = process_sse_event(
+            br#"data: {"choices":[{"delta":{"content":"hello"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"cost":0.1}}"#,
+            &mut content,
+            &mut usage,
+            &mut |chunk| {
+                rendered.push_str(chunk);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!done);
+        assert_eq!(rendered, "hello");
+        assert_eq!(content, "hello");
+        assert_eq!(usage.total_tokens, Some(3));
     }
 }

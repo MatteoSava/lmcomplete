@@ -1,6 +1,14 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::process::Command as ProcessCommand;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 #[test]
 fn init_zsh_prints_widget() {
@@ -551,4 +559,163 @@ print -r -- "IN_FLIGHT=$_LMC_IN_FLIGHT"
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("BUFFER=git status"), "stdout was: {stdout}");
     assert!(stdout.contains("IN_FLIGHT=0"), "stdout was: {stdout}");
+}
+
+#[test]
+fn explain_streams_stdout_before_completion() {
+    let (base_url, server) = spawn_streaming_server(vec![
+        (
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hello \"}}]}\n\n",
+            Duration::from_millis(2_000),
+        ),
+        (
+            "data: {\"choices\":[{\"delta\":{\"content\":\"world\"}}]}\n\n",
+            Duration::ZERO,
+        ),
+        (
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3,\"cost\":0.01}}\n\n",
+            Duration::ZERO,
+        ),
+        ("data: [DONE]\n\n", Duration::ZERO),
+    ]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = write_test_config(temp_dir.path(), &base_url);
+
+    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_lmc"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "explain",
+            "tar xzf archive.tar.gz",
+            "--shell",
+            "zsh",
+            "--history",
+            "0",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = thread::spawn(move || read_streamed_stdout(stdout, tx));
+
+    let first_chunk = rx.recv_timeout(Duration::from_millis(1_500)).unwrap();
+    assert_eq!(first_chunk, "hello");
+
+    let status = child.wait().unwrap();
+    assert!(status.success());
+
+    let full_output = reader.join().unwrap();
+    assert_eq!(full_output, "hello world\n");
+    server.join().unwrap();
+}
+
+#[test]
+fn expand_streams_stdout_before_completion() {
+    let (base_url, server) = spawn_streaming_server(vec![
+        (
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ls \"}}]}\n\n",
+            Duration::from_millis(2_000),
+        ),
+        (
+            "data: {\"choices\":[{\"delta\":{\"content\":\"-la\"}}]}\n\n",
+            Duration::ZERO,
+        ),
+        (
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2,\"total_tokens\":3,\"cost\":0.01}}\n\n",
+            Duration::ZERO,
+        ),
+        ("data: [DONE]\n\n", Duration::ZERO),
+    ]);
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_path = write_test_config(temp_dir.path(), &base_url);
+
+    let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_lmc"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "expand",
+            "list files",
+            "--shell",
+            "zsh",
+            "--history",
+            "0",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = thread::spawn(move || read_streamed_stdout(stdout, tx));
+
+    let first_chunk = rx.recv_timeout(Duration::from_millis(1_500)).unwrap();
+    assert_eq!(first_chunk, "ls");
+
+    let status = child.wait().unwrap();
+    assert!(status.success());
+
+    let full_output = reader.join().unwrap();
+    assert_eq!(full_output, "ls -la\n");
+    server.join().unwrap();
+}
+
+fn read_streamed_stdout(mut stdout: impl Read, tx: mpsc::Sender<String>) -> String {
+    let mut first_chunk = [0_u8; 64];
+    let count = stdout.read(&mut first_chunk).unwrap();
+    let first = String::from_utf8_lossy(&first_chunk[..count]).into_owned();
+    tx.send(first.clone()).unwrap();
+
+    let mut rest = String::new();
+    stdout.read_to_string(&mut rest).unwrap();
+    format!("{first}{rest}")
+}
+
+fn spawn_streaming_server(
+    frames: Vec<(&'static str, Duration)>,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+        stream.flush().unwrap();
+
+        for (frame, delay) in frames {
+            stream.write_all(frame.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            if !delay.is_zero() {
+                thread::sleep(delay);
+            }
+        }
+    });
+
+    (format!("http://{address}/api/v1/chat/completions"), handle)
+}
+
+fn write_test_config(dir: &Path, base_url: &str) -> PathBuf {
+    let config_path = dir.join("config.toml");
+    std::fs::write(
+        &config_path,
+        format!(
+            r#"
+[provider]
+name = "openrouter"
+api_key = "test-key"
+model = "test-model"
+base_url = "{base_url}"
+"#
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    config_path
 }
