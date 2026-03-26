@@ -49,18 +49,19 @@ The provider trait remains in place, but the only supported provider shipped in 
 
 The `expand` response is valid only if all of the following are true:
 
-- It resolves to exactly one shell command string
-- It contains no markdown fences, headings, or explanatory prose
-- It is non-empty after trimming
-- It does not contain multiple alternatives phrased as prose such as "or", "alternatively", or enumerated options
-- It may contain one leading safety line exactly equal to `# WARNING: destructive command`, followed by the command on the next line
+- It resolves to exactly one shell command string plus one concise explanation string
+- The command contains no markdown fences, headings, or explanatory prose
+- Both fields are non-empty after trimming
+- The command does not contain multiple alternatives phrased as prose such as "or", "alternatively", or enumerated options
+- The command does not include the safety warning prefix; destructive-command warnings are applied client-side after validation
 
 The client must normalize the model output in this order:
 
 1. Trim outer whitespace
-2. Strip a single wrapping code fence if present
-3. Re-trim
-4. Validate against the contract above
+2. Parse the configured structured response mode
+3. Normalize the command to one line
+4. Normalize the explanation to one line
+5. Validate against the contract above
 
 If validation fails, the request is treated the same as a provider failure and may use the fallback model once.
 
@@ -191,6 +192,10 @@ max_entries = 10
 max_line_chars = 120
 output_entries = 2
 max_output_chars = 500
+
+[expand]
+response_mode = "tool_call"
+explain_display = "both"
 
 [request]
 timeout_ms = 1500

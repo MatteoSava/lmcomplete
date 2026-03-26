@@ -1,4 +1,5 @@
 use crate::cli::AuditMode;
+use crate::config::ExpandResponseMode;
 use crate::context::RequestContext;
 use crate::redaction::redact;
 
@@ -9,7 +10,12 @@ pub struct PromptBundle {
     pub warnings: Vec<String>,
 }
 
-pub fn build(mode: AuditMode, input: &str, context: RequestContext) -> PromptBundle {
+pub fn build(
+    mode: AuditMode,
+    input: &str,
+    context: RequestContext,
+    expand_response_mode: ExpandResponseMode,
+) -> PromptBundle {
     let redaction = redact(input);
     let mut warnings = context.input_warnings;
     if !redaction.findings.is_empty() {
@@ -17,10 +23,21 @@ pub fn build(mode: AuditMode, input: &str, context: RequestContext) -> PromptBun
     }
 
     let system_prompt = match mode {
-        AuditMode::Expand => format!(
-            "You are a shell command generator. Given a natural language description,\nreturn ONLY the shell command. No explanation, no markdown, no backticks.\nReturn exactly one shell command on one line.\nIf multiple operations are needed, chain them on one line with shell operators such as &&, ;, or |.\nIf the command is destructive (rm -rf, DROP, --force), prefix with: # WARNING: destructive command\nShell: {} | OS: {}",
-            context.shell, context.os
-        ),
+        AuditMode::Expand => {
+            let response_contract = match expand_response_mode {
+                ExpandResponseMode::ToolCall => {
+                    "Use the provided tool exactly once to return the fields. Do not reply in plain text."
+                }
+                ExpandResponseMode::MessageJson => {
+                    "Return ONLY a JSON object with keys \"command\" and \"explanation\". Do not include markdown, code fences, or extra text."
+                }
+            };
+
+            format!(
+                "You are a shell command generator. Given a natural language description,\nreturn a shell command and a concise explanation for developers.\nCommand requirements:\n- Return exactly one shell command on one line.\n- No markdown or backticks.\n- If multiple operations are needed, chain them on one line with shell operators such as &&, ;, or |.\nExplanation requirements:\n- Return one short plain-text sentence.\n- Focus on what the command does.\n{response_contract}\nShell: {} | OS: {}",
+                context.shell, context.os
+            )
+        }
         AuditMode::Explain => format!(
             "You explain shell commands for developers.\nReturn a concise explanation in plain text with short bullet points.\nShell: {} | OS: {}",
             context.shell, context.os
@@ -71,6 +88,7 @@ pub fn build(mode: AuditMode, input: &str, context: RequestContext) -> PromptBun
 #[cfg(test)]
 mod tests {
     use crate::cli::AuditMode;
+    use crate::config::ExpandResponseMode;
     use crate::context::RequestContext;
     use crate::context::cwd::{CwdContext, GitContext};
     use crate::context::shell::Shell;
@@ -95,7 +113,12 @@ mod tests {
             input_warnings: Vec::new(),
         };
 
-        let prompt = build(AuditMode::Expand, "commit all changes", context);
+        let prompt = build(
+            AuditMode::Expand,
+            "commit all changes",
+            context,
+            ExpandResponseMode::ToolCall,
+        );
         assert!(prompt.user_prompt.contains("Git branch: feat/login"));
         assert!(prompt.user_prompt.contains("Recent commands:"));
         assert!(prompt.user_prompt.contains("User: commit all changes"));
@@ -111,12 +134,43 @@ mod tests {
             input_warnings: Vec::new(),
         };
 
-        let prompt = build(AuditMode::Expand, "show git status", context);
+        let prompt = build(
+            AuditMode::Expand,
+            "show git status",
+            context,
+            ExpandResponseMode::ToolCall,
+        );
         assert!(
             prompt
                 .system_prompt
                 .contains("exactly one shell command on one line")
         );
         assert!(prompt.system_prompt.contains("chain them on one line"));
+        assert!(prompt.system_prompt.contains("provided tool exactly once"));
+    }
+
+    #[test]
+    fn message_json_prompt_requires_json_response() {
+        let context = RequestContext {
+            shell: Shell::Zsh,
+            os: "macos".into(),
+            cwd: CwdContext::default(),
+            history: Vec::new(),
+            input_warnings: Vec::new(),
+        };
+
+        let prompt = build(
+            AuditMode::Expand,
+            "show git status",
+            context,
+            ExpandResponseMode::MessageJson,
+        );
+
+        assert!(prompt.system_prompt.contains("Return ONLY a JSON object"));
+        assert!(
+            prompt
+                .system_prompt
+                .contains("\"command\" and \"explanation\"")
+        );
     }
 }

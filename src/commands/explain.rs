@@ -15,7 +15,12 @@ pub async fn run(args: ExplainArgs, config_path: Option<&Path>) -> Result<()> {
     let history_limit = args.history.unwrap_or(config.history.max_entries);
 
     let context = RequestContext::collect(args.shell, history_limit)?;
-    let prompt = builder::build(AuditMode::Explain, &args.command, context);
+    let prompt = builder::build(
+        AuditMode::Explain,
+        &args.command,
+        context,
+        config.expand.response_mode,
+    );
     let provider = provider::build(&config)?;
     let request = CompletionRequest {
         system_prompt: prompt.system_prompt,

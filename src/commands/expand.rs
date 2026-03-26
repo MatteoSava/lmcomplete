@@ -4,10 +4,13 @@ use std::{io, io::Write};
 use anyhow::Result;
 
 use crate::cli::{ActiveStreamFormat, AuditMode, ExpandArgs};
-use crate::config::Config;
+use crate::config::{Config, ExplainDisplay};
 use crate::context::RequestContext;
 use crate::prompt::builder;
-use crate::provider::{self, CompletionEventHandler, CompletionRequest};
+use crate::provider::{
+    self, CompletionEventHandler, CompletionRequest, StructuredExpandRequest,
+    StructuredExpandResponse,
+};
 use crate::safety;
 use crate::stats::UsageStats;
 
@@ -16,26 +19,38 @@ pub async fn run(args: ExpandArgs, config_path: Option<&Path>) -> Result<()> {
     let history_limit = args.history.unwrap_or(config.history.max_entries);
 
     let context = RequestContext::collect(args.shell, history_limit)?;
-    let prompt = builder::build(AuditMode::Expand, &args.query, context);
+    let shell = context.shell;
+    let os = context.os.clone();
+    let structured_prompt = builder::build(
+        AuditMode::Expand,
+        &args.query,
+        context,
+        config.expand.response_mode,
+    );
     let provider = provider::build(&config)?;
-    let request = CompletionRequest {
-        system_prompt: prompt.system_prompt,
-        user_prompt: prompt.user_prompt,
-    };
 
     match args.stream_format.resolve(config.streaming.enabled) {
         ActiveStreamFormat::Off => {
-            let response = provider.complete(request).await?;
+            let response = provider
+                .expand(StructuredExpandRequest {
+                    system_prompt: structured_prompt.system_prompt,
+                    user_prompt: structured_prompt.user_prompt,
+                })
+                .await?;
             UsageStats::record(&response.usage)?;
-            println!("{}", finalize_expand_output(&response.content)?);
+            println!("{}", finalize_expand_command(&response.command)?);
             Ok(())
         }
         ActiveStreamFormat::Tty => {
+            let request = CompletionRequest {
+                system_prompt: build_tty_system_prompt(shell.to_string(), os),
+                user_prompt: structured_prompt.user_prompt,
+            };
             let mut renderer = TtyExpandRenderer::default();
             match provider.stream(request, &mut renderer).await {
                 Ok(response) => {
                     UsageStats::record(&response.usage)?;
-                    renderer.finish_success(&finalize_expand_output(&response.content)?)?;
+                    renderer.finish_success(&finalize_expand_command(&response.content)?)?;
                     Ok(())
                 }
                 Err(error) => {
@@ -45,23 +60,26 @@ pub async fn run(args: ExpandArgs, config_path: Option<&Path>) -> Result<()> {
             }
         }
         ActiveStreamFormat::Widget => {
-            let mut renderer = WidgetExpandRenderer;
-            match provider.stream(request, &mut renderer).await {
-                Ok(response) => {
-                    UsageStats::record(&response.usage)?;
-                    renderer.finish_success(&finalize_expand_output(&response.content)?)?;
-                    Ok(())
-                }
-                Err(error) => {
-                    renderer.finish_error(&error)?;
-                    Err(error)
-                }
-            }
+            let response = provider
+                .expand(StructuredExpandRequest {
+                    system_prompt: structured_prompt.system_prompt,
+                    user_prompt: structured_prompt.user_prompt,
+                })
+                .await?;
+            UsageStats::record(&response.usage)?;
+            WidgetExpandRenderer.finish_success(&response, config.expand.explain_display)?;
+            Ok(())
         }
     }
 }
 
-fn finalize_expand_output(content: &str) -> Result<String> {
+fn build_tty_system_prompt(shell: String, os: String) -> String {
+    format!(
+        "You are a shell command generator. Given a natural language description,\nreturn ONLY the shell command. No explanation, no markdown, no backticks.\nReturn exactly one shell command on one line.\nIf multiple operations are needed, chain them on one line with shell operators such as &&, ;, or |.\nIf the command is destructive (rm -rf, DROP, --force), prefix with: # WARNING: destructive command\nShell: {shell} | OS: {os}"
+    )
+}
+
+fn finalize_expand_command(content: &str) -> Result<String> {
     let normalized = safety::normalize_expand_output(content)?;
     Ok(safety::apply_warning(&normalized))
 }
@@ -115,41 +133,37 @@ impl CompletionEventHandler for TtyExpandRenderer {
 struct WidgetExpandRenderer;
 
 impl WidgetExpandRenderer {
-    fn finish_success(&self, final_output: &str) -> Result<()> {
-        let (warning, command) = split_widget_expand_output(final_output);
+    fn finish_success(
+        &self,
+        response: &StructuredExpandResponse,
+        explain_display: ExplainDisplay,
+    ) -> Result<()> {
+        let final_output = finalize_expand_command(&response.command)?;
+        let (warning, command) = split_widget_expand_output(&final_output);
+        let explanation =
+            sanitize_widget_field(&safety::normalize_explanation(&response.explanation)?);
         emit_widget_event(
             "done",
             &[
                 ("status", "ok".to_string()),
                 ("warning", warning.to_string()),
                 ("command", command),
+                ("explanation", explanation),
+                (
+                    "display",
+                    sanitize_widget_field(explain_display.as_widget_value()),
+                ),
             ],
         )
-    }
-
-    fn finish_error(&self, error: &anyhow::Error) -> Result<()> {
-        emit_widget_event(
-            "done",
-            &[
-                ("status", "error".to_string()),
-                ("message", sanitize_widget_field(&error.to_string())),
-            ],
-        )
-    }
-}
-
-impl CompletionEventHandler for WidgetExpandRenderer {
-    fn on_content(&mut self, _content: &str) -> Result<()> {
-        Ok(())
     }
 }
 
 fn split_widget_expand_output(final_output: &str) -> (&'static str, String) {
-    let warning_prefix = "# WARNING: destructive command\n";
-    if let Some(command) = final_output.strip_prefix(warning_prefix) {
-        ("warning", sanitize_widget_field(command))
+    let (warning, command) = safety::split_warning(final_output);
+    if warning.is_some() {
+        ("warning", sanitize_widget_field(&command))
     } else {
-        ("none", sanitize_widget_field(final_output))
+        ("none", sanitize_widget_field(&command))
     }
 }
 
@@ -174,4 +188,15 @@ fn sanitize_widget_field(value: &str) -> String {
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+impl ExplainDisplay {
+    fn as_widget_value(self) -> &'static str {
+        match self {
+            ExplainDisplay::Both => "both",
+            ExplainDisplay::Inline => "inline",
+            ExplainDisplay::Message => "message",
+            ExplainDisplay::Off => "off",
+        }
+    }
 }

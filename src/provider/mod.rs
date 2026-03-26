@@ -13,6 +13,12 @@ pub struct CompletionRequest {
     pub user_prompt: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct StructuredExpandRequest {
+    pub system_prompt: String,
+    pub user_prompt: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Usage {
     pub prompt_tokens: Option<u64>,
@@ -27,6 +33,13 @@ pub struct CompletionResponse {
     pub usage: Usage,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct StructuredExpandResponse {
+    pub command: String,
+    pub explanation: String,
+    pub usage: Usage,
+}
+
 pub trait CompletionEventHandler: Send {
     fn on_content(&mut self, content: &str) -> Result<()>;
 }
@@ -34,6 +47,7 @@ pub trait CompletionEventHandler: Send {
 #[async_trait]
 pub trait Provider: Send + Sync {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse>;
+    async fn expand(&self, request: StructuredExpandRequest) -> Result<StructuredExpandResponse>;
     async fn stream(
         &self,
         request: CompletionRequest,

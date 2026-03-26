@@ -3,6 +3,8 @@ use std::sync::LazyLock;
 use anyhow::{Result, bail};
 use regex::Regex;
 
+pub const DESTRUCTIVE_WARNING: &str = "# WARNING: destructive command";
+
 static DESTRUCTIVE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)\b(rm\s+-rf|drop\s+table|git\s+push\b.*--force|terraform\s+destroy|kubectl\s+delete|docker\s+system\s+prune)\b")
         .expect("valid destructive pattern regex")
@@ -14,13 +16,11 @@ pub fn apply_warning(command: &str) -> String {
         return String::new();
     }
 
-    if trimmed.starts_with("# WARNING: destructive command")
-        || !DESTRUCTIVE_PATTERN.is_match(trimmed)
-    {
+    if trimmed.starts_with(DESTRUCTIVE_WARNING) || !DESTRUCTIVE_PATTERN.is_match(trimmed) {
         return trimmed.to_string();
     }
 
-    format!("# WARNING: destructive command\n{trimmed}")
+    format!("{DESTRUCTIVE_WARNING}\n{trimmed}")
 }
 
 pub fn normalize_expand_output(output: &str) -> Result<String> {
@@ -37,7 +37,7 @@ pub fn normalize_expand_output(output: &str) -> Result<String> {
     let mut body = Vec::new();
 
     if let Some(first_line) = lines.next() {
-        if first_line == "# WARNING: destructive command" {
+        if first_line == DESTRUCTIVE_WARNING {
             warning = Some(first_line.to_string());
         } else {
             body.push(normalize_segment(first_line));
@@ -77,7 +77,7 @@ pub fn preview_expand_output(output: &str) -> String {
     let mut body = Vec::new();
 
     if let Some(first_line) = lines.next() {
-        if first_line == "# WARNING: destructive command" {
+        if first_line == DESTRUCTIVE_WARNING {
             warning = true;
         } else {
             body.push(normalize_segment(first_line));
@@ -93,10 +93,36 @@ pub fn preview_expand_output(output: &str) -> String {
         .join(" ");
 
     match (warning, command.is_empty()) {
-        (true, true) => "# WARNING: destructive command".to_string(),
-        (true, false) => format!("# WARNING: destructive command {command}"),
+        (true, true) => DESTRUCTIVE_WARNING.to_string(),
+        (true, false) => format!("{DESTRUCTIVE_WARNING} {command}"),
         (false, _) => command,
     }
+}
+
+pub fn split_warning(output: &str) -> (Option<String>, String) {
+    let prefix = format!("{DESTRUCTIVE_WARNING}\n");
+    if let Some(command) = output.strip_prefix(&prefix) {
+        (
+            Some("WARNING: destructive command".to_string()),
+            command.to_string(),
+        )
+    } else {
+        (None, output.trim().to_string())
+    }
+}
+
+pub fn normalize_explanation(explanation: &str) -> Result<String> {
+    let normalized = explanation
+        .lines()
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if normalized.is_empty() {
+        bail!("model returned an empty explanation");
+    }
+
+    Ok(normalized)
 }
 
 fn normalize_segment(segment: &str) -> String {
@@ -105,7 +131,10 @@ fn normalize_segment(segment: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_warning, normalize_expand_output, preview_expand_output};
+    use super::{
+        DESTRUCTIVE_WARNING, apply_warning, normalize_expand_output, normalize_explanation,
+        preview_expand_output, split_warning,
+    };
 
     #[test]
     fn prefixes_destructive_commands() {
@@ -153,5 +182,19 @@ mod tests {
             output,
             "# WARNING: destructive command git add -A && git push origin main"
         );
+    }
+
+    #[test]
+    fn splits_warning_from_command() {
+        let (warning, command) = split_warning(&format!("{DESTRUCTIVE_WARNING}\ngit push --force"));
+        assert_eq!(warning.as_deref(), Some("WARNING: destructive command"));
+        assert_eq!(command, "git push --force");
+    }
+
+    #[test]
+    fn normalizes_explanation_to_single_line() {
+        let explanation =
+            normalize_explanation("Shows\n  the\tcurrent repository status.").unwrap();
+        assert_eq!(explanation, "Shows the current repository status.");
     }
 }

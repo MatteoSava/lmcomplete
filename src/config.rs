@@ -13,6 +13,7 @@ pub struct Config {
     pub provider: ProviderConfig,
     pub history: HistoryConfig,
     pub streaming: StreamingConfig,
+    pub expand: ExpandConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -42,6 +43,29 @@ pub struct HistoryConfig {
 #[serde(default)]
 pub struct StreamingConfig {
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ExpandConfig {
+    pub response_mode: ExpandResponseMode,
+    pub explain_display: ExplainDisplay,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpandResponseMode {
+    ToolCall,
+    MessageJson,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplainDisplay {
+    Both,
+    Inline,
+    Message,
+    Off,
 }
 
 impl Default for ProviderConfig {
@@ -74,6 +98,27 @@ impl Default for HistoryConfig {
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+impl Default for ExpandConfig {
+    fn default() -> Self {
+        Self {
+            response_mode: ExpandResponseMode::default(),
+            explain_display: ExplainDisplay::default(),
+        }
+    }
+}
+
+impl Default for ExpandResponseMode {
+    fn default() -> Self {
+        Self::ToolCall
+    }
+}
+
+impl Default for ExplainDisplay {
+    fn default() -> Self {
+        Self::Both
     }
 }
 
@@ -210,7 +255,7 @@ fn validate_permissions(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, resolve_config_dir};
+    use super::{Config, ExpandResponseMode, ExplainDisplay, resolve_config_dir};
     use std::fs;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -225,6 +270,8 @@ mod tests {
         unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
 
         assert_eq!(config.provider_api_key(), Some("env-key"));
+        assert_eq!(config.expand.response_mode, ExpandResponseMode::ToolCall);
+        assert_eq!(config.expand.explain_display, ExplainDisplay::Both);
     }
 
     #[test]
@@ -238,6 +285,10 @@ mod tests {
 name = "openrouter"
 api_key = "file-key"
 model = "model-x"
+
+[expand]
+response_mode = "message_json"
+explain_display = "inline"
 "#,
         )
         .unwrap();
@@ -250,6 +301,8 @@ model = "model-x"
         let config = Config::load(Some(&config_path)).unwrap();
         assert_eq!(config.provider_api_key(), Some("file-key"));
         assert_eq!(config.provider.model, "model-x");
+        assert_eq!(config.expand.response_mode, ExpandResponseMode::MessageJson);
+        assert_eq!(config.expand.explain_display, ExplainDisplay::Inline);
     }
 
     #[test]

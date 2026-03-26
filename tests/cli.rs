@@ -229,7 +229,20 @@ data: [DONE]
 #[test]
 fn stream_format_off_keeps_one_shot_output() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let body = r#"{"choices":[{"message":{"content":"git status"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.1}}"#;
+    let body = r#"{
+  "choices": [{
+    "message": {
+      "content": null,
+      "tool_calls": [{
+        "function": {
+          "name": "emit_expand_result",
+          "arguments": "{\"command\":\"git status\",\"explanation\":\"Shows the current repository status.\"}"
+        }
+      }]
+    }
+  }],
+  "usage": {"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,"cost":0.1}
+}"#;
     let (base_url, server) = spawn_json_server(body.to_string(), Duration::from_millis(120));
     let config_path = write_test_config(temp_dir.path(), &base_url, true);
 
@@ -260,31 +273,21 @@ fn stream_format_off_keeps_one_shot_output() {
 #[test]
 fn widget_streaming_emits_only_final_done_event() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let (base_url, server) = spawn_streaming_server(vec![
-        (
-            r#"data: {"choices":[{"delta":{"content":"terraform "}}]}
-
-"#
-            .to_string(),
-            Duration::from_millis(20),
-        ),
-        (
-            r#"data: {"choices":[{"delta":{"content":"plan -out=tfplan"}}]}
-
-"#
-            .to_string(),
-            Duration::from_millis(20),
-        ),
-        (
-            r#"data: {"choices":[{"delta":{"content":" && terraform show -json tfplan"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"cost":0.1}}
-
-data: [DONE]
-
-"#
-            .to_string(),
-            Duration::from_millis(20),
-        ),
-    ]);
+    let body = r#"{
+  "choices": [{
+    "message": {
+      "content": null,
+      "tool_calls": [{
+        "function": {
+          "name": "emit_expand_result",
+          "arguments": "{\"command\":\"terraform plan -out=tfplan && terraform show -json tfplan\",\"explanation\":\"Creates a Terraform plan file and renders it as JSON.\"}"
+        }
+      }]
+    }
+  }],
+  "usage": {"prompt_tokens":1,"completion_tokens":2,"total_tokens":3,"cost":0.1}
+}"#;
+    let (base_url, server) = spawn_json_server(body.to_string(), Duration::from_millis(20));
     let config_path = write_test_config(temp_dir.path(), &base_url, true);
 
     let output = ProcessCommand::new(cargo_bin("lmc"))
@@ -321,6 +324,11 @@ data: [DONE]
         stdout.contains("command=terraform plan -out=tfplan && terraform show -json tfplan"),
         "stdout was: {stdout}"
     );
+    assert!(
+        stdout.contains("explanation=Creates a Terraform plan file and renders it as JSON."),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("display=both"), "stdout was: {stdout}");
 }
 
 #[test]
@@ -884,6 +892,118 @@ print -r -- "REDRAW=$REDRAW_COUNT"
         "stdout was: {stdout}"
     );
     assert!(stdout.contains("REDRAW=1"), "stdout was: {stdout}");
+}
+
+#[test]
+fn zsh_widget_stream_success_shows_explanation_as_inline_comment_and_message() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+
+    let script = format!(
+        r#"
+LAST_MESSAGE=""
+zle() {{
+  case "$1" in
+    -M)
+      if [[ "$2" == "--" ]]; then
+        LAST_MESSAGE="$3"
+      else
+        LAST_MESSAGE="$2"
+      fi
+      ;;
+    -F|-R|-N|redisplay|expand-or-complete)
+      ;;
+  esac
+}}
+bindkey() {{ :; }}
+source "{widget_path}"
+BUFFER="show git status"
+CURSOR=${{#BUFFER}}
+_LMC_ORIGINAL_BUFFER="$BUFFER"
+WIDGET="lmc-handle-expand-event"
+_lmc_finish_stream_success "none" "git status" "Shows the current repository status." "both"
+print -r -- "BUFFER=$BUFFER"
+print -r -- "POSTDISPLAY=$POSTDISPLAY"
+print -r -- "MESSAGE=$LAST_MESSAGE"
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("BUFFER=git status"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("POSTDISPLAY= \u{1b}[90m# Shows the current repository status.\u{1b}[0m"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("MESSAGE=Shows the current repository status."),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
+fn zsh_widget_clears_explanation_when_buffer_changes() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+
+    let script = format!(
+        r#"
+LAST_MESSAGE=""
+zle() {{
+  case "$1" in
+    -M)
+      if [[ "$2" == "--" ]]; then
+        LAST_MESSAGE="$3"
+      else
+        LAST_MESSAGE="$2"
+      fi
+      ;;
+    -F|-R|-N|redisplay|expand-or-complete)
+      ;;
+  esac
+}}
+bindkey() {{ :; }}
+source "{widget_path}"
+BUFFER="show git status"
+CURSOR=${{#BUFFER}}
+_LMC_ORIGINAL_BUFFER="$BUFFER"
+WIDGET="lmc-handle-expand-event"
+_lmc_finish_stream_success "none" "git status" "Shows the current repository status." "both"
+BUFFER="git status --short"
+CURSOR=${{#BUFFER}}
+LASTWIDGET="self-insert"
+_lmc_line_pre_redraw
+print -r -- "POSTDISPLAY=$POSTDISPLAY"
+print -r -- "MESSAGE=${{LAST_MESSAGE:-<empty>}}"
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("POSTDISPLAY="), "stdout was: {stdout}");
+    assert!(stdout.contains("MESSAGE=<empty>"), "stdout was: {stdout}");
+    assert!(
+        !stdout.contains("POSTDISPLAY= \u{1b}[90m# Shows the current repository status.\u{1b}[0m"),
+        "stdout was: {stdout}"
+    );
 }
 
 #[test]

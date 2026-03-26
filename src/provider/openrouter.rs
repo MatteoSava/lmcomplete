@@ -3,10 +3,16 @@ use async_trait::async_trait;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::json;
 
-use crate::config::Config;
+use crate::config::{Config, ExpandResponseMode};
 
-use super::{CompletionEventHandler, CompletionRequest, CompletionResponse, Provider, Usage};
+use super::{
+    CompletionEventHandler, CompletionRequest, CompletionResponse, Provider,
+    StructuredExpandRequest, StructuredExpandResponse, Usage,
+};
+
+const EXPAND_TOOL_NAME: &str = "emit_expand_result";
 
 pub struct OpenRouterProvider {
     client: reqwest::Client,
@@ -14,6 +20,7 @@ pub struct OpenRouterProvider {
     api_key: String,
     model: String,
     fallback_model: Option<String>,
+    expand_response_mode: ExpandResponseMode,
 }
 
 impl OpenRouterProvider {
@@ -43,6 +50,7 @@ impl OpenRouterProvider {
             api_key,
             model: config.provider.model,
             fallback_model: config.provider.fallback.map(|value| value.model),
+            expand_response_mode: config.expand.response_mode,
         })
     }
 
@@ -78,7 +86,8 @@ impl OpenRouterProvider {
             .choices
             .into_iter()
             .next()
-            .map(|choice| choice.message.content.trim().to_string())
+            .and_then(|choice| choice.message.content)
+            .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow!("OpenRouter returned an empty completion"))?;
 
@@ -86,6 +95,35 @@ impl OpenRouterProvider {
             content,
             usage: parsed.usage.unwrap_or_default().into(),
         })
+    }
+
+    async fn expand_with_model(
+        &self,
+        model: &str,
+        request: &StructuredExpandRequest,
+    ) -> Result<StructuredExpandResponse> {
+        let body = build_structured_expand_request(model, request, self.expand_response_mode);
+
+        let response = self
+            .client
+            .post(&self.endpoint)
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .context("failed to send request to OpenRouter")?;
+
+        let status = response.status();
+        let raw = response
+            .text()
+            .await
+            .context("failed to read OpenRouter response body")?;
+
+        if !status.is_success() {
+            bail!("OpenRouter returned {status}: {raw}");
+        }
+
+        parse_structured_expand_response(&raw, self.expand_response_mode)
     }
 
     async fn stream_with_model(
@@ -210,6 +248,29 @@ impl Provider for OpenRouterProvider {
         }
     }
 
+    async fn expand(&self, request: StructuredExpandRequest) -> Result<StructuredExpandResponse> {
+        match self.expand_with_model(&self.model, &request).await {
+            Ok(response) => Ok(response),
+            Err(primary_error) => {
+                let Some(fallback_model) = &self.fallback_model else {
+                    return Err(primary_error);
+                };
+                if !should_use_fallback_model(&self.model, false) {
+                    return Err(primary_error);
+                }
+
+                self.expand_with_model(fallback_model, &request)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "primary model '{}' failed and fallback model '{}' also failed: {primary_error:#}",
+                            self.model, fallback_model
+                        )
+                    })
+            }
+        }
+    }
+
     async fn stream(
         &self,
         request: CompletionRequest,
@@ -252,6 +313,10 @@ struct OpenRouterRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<OpenRouterProviderPreferences>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<ToolChoice>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,7 +338,8 @@ struct OpenRouterChoice {
 
 #[derive(Debug, Deserialize)]
 struct OpenRouterMessage {
-    content: String,
+    content: Option<String>,
+    tool_calls: Option<Vec<OpenRouterToolCall>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -310,6 +376,49 @@ struct OpenRouterStreamDelta {
 #[derive(Debug, Deserialize)]
 struct OpenRouterStreamError {
     message: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterToolCall {
+    function: OpenRouterFunctionCall,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenRouterFunctionCall {
+    name: String,
+    arguments: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExpandPayload {
+    command: String,
+    explanation: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolDefinition {
+    #[serde(rename = "type")]
+    tool_type: &'static str,
+    function: ToolFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolFunction {
+    name: &'static str,
+    description: &'static str,
+    parameters: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolChoice {
+    #[serde(rename = "type")]
+    choice_type: &'static str,
+    function: ToolChoiceFunction,
+}
+
+#[derive(Debug, Serialize)]
+struct ToolChoiceFunction {
+    name: &'static str,
 }
 
 impl From<OpenRouterUsage> for Usage {
@@ -396,6 +505,136 @@ fn build_openrouter_request(
         temperature: Some(0.0),
         stream,
         provider: routing.provider,
+        tools: None,
+        tool_choice: None,
+    }
+}
+
+fn build_structured_expand_request(
+    model: &str,
+    request: &StructuredExpandRequest,
+    response_mode: ExpandResponseMode,
+) -> OpenRouterRequest {
+    let routing = RoutedModel::new(model);
+    let (tools, tool_choice) = match response_mode {
+        ExpandResponseMode::ToolCall => (
+            Some(vec![expand_tool_definition()]),
+            Some(expand_tool_choice()),
+        ),
+        ExpandResponseMode::MessageJson => (None, None),
+    };
+
+    OpenRouterRequest {
+        model: routing.model,
+        messages: vec![
+            Message {
+                role: "system",
+                content: request.system_prompt.clone(),
+            },
+            Message {
+                role: "user",
+                content: request.user_prompt.clone(),
+            },
+        ],
+        max_tokens: Some(256),
+        temperature: Some(0.0),
+        stream: None,
+        provider: routing.provider,
+        tools,
+        tool_choice,
+    }
+}
+
+fn parse_structured_expand_response(
+    raw: &str,
+    response_mode: ExpandResponseMode,
+) -> Result<StructuredExpandResponse> {
+    let parsed: OpenRouterResponse =
+        serde_json::from_str(raw).context("failed to parse OpenRouter response")?;
+    let usage = parsed.usage.unwrap_or_default().into();
+    let choice = parsed
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("OpenRouter returned no completion choices"))?;
+
+    let payload = match response_mode {
+        ExpandResponseMode::ToolCall => parse_tool_call_payload(choice.message)?,
+        ExpandResponseMode::MessageJson => parse_message_json_payload(choice.message)?,
+    };
+
+    let command = payload.command.trim();
+    if command.is_empty() {
+        bail!("OpenRouter returned an empty expand command");
+    }
+
+    let explanation = payload.explanation.trim();
+    if explanation.is_empty() {
+        bail!("OpenRouter returned an empty expand explanation");
+    }
+
+    Ok(StructuredExpandResponse {
+        command: command.to_string(),
+        explanation: explanation.to_string(),
+        usage,
+    })
+}
+
+fn parse_tool_call_payload(message: OpenRouterMessage) -> Result<ExpandPayload> {
+    let tool_call = message
+        .tool_calls
+        .and_then(|calls| {
+            calls
+                .into_iter()
+                .find(|call| call.function.name == EXPAND_TOOL_NAME)
+        })
+        .ok_or_else(|| anyhow!("OpenRouter did not return the required expand tool call"))?;
+
+    serde_json::from_str(&tool_call.function.arguments)
+        .context("failed to parse expand tool call arguments")
+}
+
+fn parse_message_json_payload(message: OpenRouterMessage) -> Result<ExpandPayload> {
+    let content = message
+        .content
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("OpenRouter returned an empty completion"))?;
+
+    serde_json::from_str(&content).context("failed to parse expand JSON response")
+}
+
+fn expand_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        tool_type: "function",
+        function: ToolFunction {
+            name: EXPAND_TOOL_NAME,
+            description: "Return a shell command and a short explanation for it.",
+            parameters: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Exactly one shell command on one line with no markdown or code fences."
+                    },
+                    "explanation": {
+                        "type": "string",
+                        "description": "One short plain-text sentence explaining what the command does."
+                    }
+                },
+                "required": ["command", "explanation"]
+            }),
+        },
+    }
+}
+
+fn expand_tool_choice() -> ToolChoice {
+    ToolChoice {
+        choice_type: "function",
+        function: ToolChoiceFunction {
+            name: EXPAND_TOOL_NAME,
+        },
     }
 }
 
@@ -492,9 +731,11 @@ fn parse_sse_event(event: &[u8]) -> Result<Option<String>> {
 mod tests {
     use super::{
         CompletionRequest, OpenRouterStreamResponse, OpenRouterUsage, RoutedModel, SseParser,
-        build_openrouter_request, find_event_boundary, parse_sse_event, should_use_fallback_model,
+        build_openrouter_request, find_event_boundary, parse_message_json_payload, parse_sse_event,
+        parse_structured_expand_response, parse_tool_call_payload, should_use_fallback_model,
         split_provider_suffix,
     };
+    use crate::config::ExpandResponseMode;
     use crate::provider::Usage;
 
     #[test]
@@ -608,5 +849,131 @@ data: {"choices":[{"delta":{"content":"status"}}]}
         );
 
         assert_eq!(request.temperature, Some(0.0));
+    }
+
+    #[test]
+    fn parses_structured_expand_tool_call_response() {
+        let response = parse_structured_expand_response(
+            r#"{
+  "choices": [{
+    "message": {
+      "content": null,
+      "tool_calls": [{
+        "function": {
+          "name": "emit_expand_result",
+          "arguments": "{\"command\":\"git status\",\"explanation\":\"Shows the current repository status.\"}"
+        }
+      }]
+    }
+  }],
+  "usage": { "total_tokens": 12 }
+}"#,
+            ExpandResponseMode::ToolCall,
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "git status");
+        assert_eq!(response.explanation, "Shows the current repository status.");
+        assert_eq!(response.usage.total_tokens, Some(12));
+    }
+
+    #[test]
+    fn rejects_missing_tool_call_in_tool_call_mode() {
+        let error = parse_structured_expand_response(
+            r#"{
+  "choices": [{
+    "message": {
+      "content": "{\"command\":\"git status\",\"explanation\":\"Shows status.\"}"
+    }
+  }]
+}"#,
+            ExpandResponseMode::ToolCall,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("required expand tool call"));
+    }
+
+    #[test]
+    fn parses_message_json_expand_response() {
+        let response = parse_structured_expand_response(
+            r#"{
+  "choices": [{
+    "message": {
+      "content": "{\"command\":\"git status\",\"explanation\":\"Shows the current repository status.\"}"
+    }
+  }]
+}"#,
+            ExpandResponseMode::MessageJson,
+        )
+        .unwrap();
+
+        assert_eq!(response.command, "git status");
+        assert_eq!(response.explanation, "Shows the current repository status.");
+    }
+
+    #[test]
+    fn rejects_invalid_json_content_in_message_mode() {
+        let error = parse_structured_expand_response(
+            r#"{
+  "choices": [{
+    "message": {
+      "content": "git status"
+    }
+  }]
+}"#,
+            ExpandResponseMode::MessageJson,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to parse expand JSON response")
+        );
+    }
+
+    #[test]
+    fn parses_tool_call_payload_from_first_matching_call() {
+        let payload = parse_tool_call_payload(
+            serde_json::from_str(
+                r#"{
+  "content": null,
+  "tool_calls": [
+    {
+      "function": {
+        "name": "ignored",
+        "arguments": "{\"command\":\"false\",\"explanation\":\"Ignore.\"}"
+      }
+    },
+    {
+      "function": {
+        "name": "emit_expand_result",
+        "arguments": "{\"command\":\"git status\",\"explanation\":\"Shows status.\"}"
+      }
+    }
+  ]
+}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(payload.command, "git status");
+    }
+
+    #[test]
+    fn parses_message_json_payload() {
+        let payload = parse_message_json_payload(
+            serde_json::from_str(
+                r#"{
+  "content": "{\"command\":\"git status\",\"explanation\":\"Shows status.\"}"
+}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(payload.explanation, "Shows status.");
     }
 }

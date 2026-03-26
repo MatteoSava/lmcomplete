@@ -12,7 +12,7 @@ pub fn run(args: AuditArgs, config_path: Option<&Path>) -> Result<()> {
     let history_limit = args.history.unwrap_or(config.history.max_entries);
 
     let context = RequestContext::collect(args.shell, history_limit)?;
-    let prompt = builder::build(args.mode, &args.input, context);
+    let prompt = builder::build(args.mode, &args.input, context, config.expand.response_mode);
 
     if !prompt.warnings.is_empty() {
         println!("Warnings:");

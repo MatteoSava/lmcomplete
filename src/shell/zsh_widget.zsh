@@ -10,6 +10,7 @@ typeset -g _LMC_STATUS_FILE=""
 typeset -g _LMC_EVENT_FILE=""
 typeset -gi _LMC_CLEAR_MESSAGE_ON_NEXT_REDRAW=0
 typeset -gi _LMC_MESSAGE_VISIBLE=0
+typeset -g _LMC_EXPLAIN_BUFFER=""
 typeset -ga _LMC_LOADING_FRAMES=('▏' '▎' '▍' '▌' '▋' '▊' '▉' '█' '▉' '▊' '▋' '▌' '▍' '▎')
 
 _lmc_default_config_path() {
@@ -50,6 +51,14 @@ _lmc_loading_message() {
   print -r -- "[${frame}]"
 }
 
+_lmc_explain_indicator() {
+  emulate -L zsh
+  local explanation="$1"
+  local grey=$'\033[90m'
+  local reset=$'\033[0m'
+  print -nr -- " ${grey}# ${explanation}${reset}"
+}
+
 _lmc_error_message() {
   emulate -L zsh
   local text="$1"
@@ -65,6 +74,13 @@ _lmc_clear_message() {
     zle -M ""
     _LMC_MESSAGE_VISIBLE=0
   fi
+}
+
+_lmc_clear_explanation() {
+  emulate -L zsh
+  POSTDISPLAY=""
+  _LMC_EXPLAIN_BUFFER=""
+  _lmc_clear_message
 }
 
 _lmc_soft_redraw() {
@@ -163,6 +179,7 @@ _lmc_reset_state() {
   _LMC_STATUS_FILE=""
   _LMC_EVENT_FILE=""
   _LMC_PREVIEW_BUFFER=""
+  _LMC_EXPLAIN_BUFFER=""
 }
 
 _lmc_emit_loading_ticks() {
@@ -201,6 +218,47 @@ _lmc_apply_result() {
   CURSOR=${#BUFFER}
 }
 
+_lmc_show_expand_explanation() {
+  emulate -L zsh
+
+  local explanation="$1"
+  local display="$2"
+  local warning="$3"
+  local -a messages=()
+
+  if [[ -n "$warning" && "$warning" != "none" ]]; then
+    messages+=("WARNING: destructive command")
+  fi
+
+  case "$display" in
+    both)
+      POSTDISPLAY="$(_lmc_explain_indicator "$explanation")"
+      [[ -n "$explanation" ]] && messages+=("$explanation")
+      ;;
+    inline)
+      POSTDISPLAY="$(_lmc_explain_indicator "$explanation")"
+      ;;
+    message)
+      POSTDISPLAY=""
+      [[ -n "$explanation" ]] && messages+=("$explanation")
+      ;;
+    *)
+      POSTDISPLAY=""
+      ;;
+  esac
+
+  if [[ "$display" != "off" && -n "$explanation" ]]; then
+    _LMC_EXPLAIN_BUFFER="$BUFFER"
+  fi
+
+  if (( ${#messages[@]} )); then
+    _LMC_MESSAGE_VISIBLE=1
+    zle -M -- "${(j: | :)messages}"
+  else
+    _lmc_clear_message
+  fi
+}
+
 _lmc_finish_expand() {
   emulate -L zsh
 
@@ -234,6 +292,8 @@ _lmc_finish_stream_success() {
 
   local warning="$1"
   local command="$2"
+  local explanation="$3"
+  local display="${4:-off}"
   local output="$command"
   if [[ "$warning" == "warning" ]]; then
     output="# WARNING: destructive command"$'\n'"$command"
@@ -241,7 +301,7 @@ _lmc_finish_stream_success() {
 
   _lmc_reset_state
   _lmc_apply_result "$output"
-  _lmc_clear_message
+  _lmc_show_expand_explanation "$explanation" "$display" "$warning"
   _lmc_finalize_widget_display
 }
 
@@ -303,6 +363,12 @@ _lmc_line_pre_redraw() {
 
   if (( _LMC_IN_FLIGHT )); then
     _lmc_cancel_stream
+    return 0
+  fi
+
+  if [[ -n "$_LMC_EXPLAIN_BUFFER" && "$BUFFER" != "$_LMC_EXPLAIN_BUFFER" ]]; then
+    _lmc_clear_explanation
+    _lmc_soft_redraw
     return 0
   fi
 
@@ -377,10 +443,16 @@ _lmc_handle_expand_event() {
         local result_status
         result_status="$(_lmc_event_field status "${_lmc_parts[@]:1}")"
         if [[ "$result_status" == "ok" ]]; then
-          local warning command
+          local warning command explanation display
           warning="$(_lmc_event_field warning "${_lmc_parts[@]:1}")"
           command="$(_lmc_event_field command "${_lmc_parts[@]:1}")"
-          _lmc_finish_stream_success "$warning" "$command"
+          explanation="$(_lmc_event_field explanation "${_lmc_parts[@]:1}")"
+          display="$(_lmc_event_field display "${_lmc_parts[@]:1}")"
+          _lmc_finish_stream_success \
+            "${warning:-none}" \
+            "$command" \
+            "$explanation" \
+            "${display:-off}"
         else
           local message
           message="$(_lmc_event_field message "${_lmc_parts[@]:1}")"
@@ -422,6 +494,7 @@ _lmc_expand_buffer() {
     input="${input#\?\? }"
   fi
 
+  _lmc_clear_explanation
   _LMC_ORIGINAL_BUFFER="$BUFFER"
   _LMC_ERROR_FILE="$(mktemp "${TMPDIR:-/tmp}/lmc-error.XXXXXX")" || {
     return 1
