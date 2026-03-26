@@ -5,7 +5,7 @@ typeset -g _LMC_ORIGINAL_BUFFER=""
 typeset -g _LMC_OUTPUT_FILE=""
 typeset -g _LMC_ERROR_FILE=""
 typeset -g _LMC_STATUS_FILE=""
-typeset -ga _LMC_LOADING_FRAMES=('.  ' '.. ' '...')
+typeset -ga _LMC_LOADING_FRAMES=('▏' '▎' '▍' '▌' '▋' '▊' '▉' '█' '▉' '▊' '▋' '▌' '▍' '▎')
 
 _lmc_default_config_path() {
   emulate -L zsh
@@ -33,15 +33,16 @@ _lmc_has_provider_config() {
 
 _lmc_loading_indicator() {
   emulate -L zsh
-  local frame="${1:-...}"
-  local grey=$'\033[90m'
+  local frame="${1:-▌}"
+  local accent=$'\033[38;5;117m'
+  local grey=$'\033[38;5;245m'
   local reset=$'\033[0m'
-  print -nr -- "${grey} [lmc ${frame}]${reset}"
+  print -nr -- " ${accent}${frame}${reset} ${grey}lmc${reset}"
 }
 
 _lmc_loading_message() {
   emulate -L zsh
-  local frame="${1:-...}"
+  local frame="${1:-▌}"
   print -r -- "[lmc ${frame}]"
 }
 
@@ -116,7 +117,7 @@ _lmc_stream_expand() {
     last_frame="${_LMC_LOADING_FRAMES[$frame_index]}"
     printf 'tick\t%s\n' "$last_frame"
     frame_index=$(( frame_index % ${#_LMC_LOADING_FRAMES[@]} + 1 ))
-    sleep 0.12
+    sleep 0.09
   done
 
   printf 'tick\t%s\n' "$last_frame"

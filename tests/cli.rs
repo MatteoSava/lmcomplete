@@ -36,10 +36,7 @@ fn audit_prints_prompt_bundle() {
 
 #[test]
 fn zsh_widget_finish_handles_success_without_reserved_status_variable() {
-    let widget_path = format!(
-        "{}/src/shell/zsh_widget.zsh",
-        env!("CARGO_MANIFEST_DIR")
-    );
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
 
     let script = format!(
         r#"
@@ -188,6 +185,84 @@ print -r -- "IN_FLIGHT=$_LMC_IN_FLIGHT"
 }
 
 #[test]
+fn zsh_widget_uses_cursor_style_loading_frames() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+
+    let script = format!(
+        r#"
+zle() {{ :; }}
+bindkey() {{ :; }}
+source "{widget_path}"
+print -r -- "${{(j:,:)_LMC_LOADING_FRAMES}}"
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("▏"), "stdout was: {stdout}");
+    assert!(stdout.contains("█"), "stdout was: {stdout}");
+    assert!(!stdout.contains(".  "), "stdout was: {stdout}");
+}
+
+#[test]
+fn zsh_widget_loading_indicator_places_cursor_before_label() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+
+    let script = format!(
+        r#"
+LAST_MESSAGE=""
+zle() {{
+  case "$1" in
+    -M|-R|-N|redisplay|expand-or-complete)
+      ;;
+    -F)
+      ;;
+  esac
+}}
+bindkey() {{ :; }}
+source "{widget_path}"
+_lmc_show_loading_state "▍"
+print -r -- "POSTDISPLAY=$POSTDISPLAY"
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let postdisplay = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("POSTDISPLAY="))
+        .expect("expected postdisplay output");
+
+    let cursor_idx = postdisplay.find("▍").expect("missing cursor frame");
+    let label_idx = postdisplay.find("lmc").expect("missing lmc label");
+    assert!(cursor_idx < label_idx, "postdisplay was: {postdisplay}");
+    assert!(
+        !postdisplay.contains("[lmc"),
+        "postdisplay was: {postdisplay}"
+    );
+}
+
+#[test]
 fn zsh_widget_shows_loading_message_during_expand() {
     let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
     let temp_dir = tempfile::tempdir().unwrap();
@@ -255,10 +330,7 @@ print -r -- "MESSAGE=$LAST_MESSAGE"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("MESSAGE=[lmc "),
-        "stdout was: {stdout}"
-    );
+    assert!(stdout.contains("MESSAGE=[lmc "), "stdout was: {stdout}");
 }
 
 #[test]
