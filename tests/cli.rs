@@ -895,6 +895,68 @@ print -r -- "REDRAW=$REDRAW_COUNT"
 }
 
 #[test]
+fn zsh_widget_stream_success_preserves_existing_line_pre_redraw_hook() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+
+    let script = format!(
+        r#"
+typeset -gA WIDGET_HANDLERS
+PRE_REDRAW_CALLS=0
+existing-line-pre-redraw() {{
+  (( PRE_REDRAW_CALLS++ ))
+}}
+zle() {{
+  case "$1" in
+    -N)
+      WIDGET_HANDLERS[$2]="$3"
+      ;;
+    -R|reset-prompt)
+      local hook="${{WIDGET_HANDLERS[zle-line-pre-redraw]:-}}"
+      if [[ -n "$hook" ]]; then
+        "$hook"
+      fi
+      ;;
+    -I|-M|-F|redisplay|expand-or-complete)
+      ;;
+  esac
+}}
+bindkey() {{ :; }}
+zle -N zle-line-pre-redraw existing-line-pre-redraw
+source "{widget_path}"
+source "{widget_path}"
+BUFFER="kub"
+CURSOR=${{#BUFFER}}
+_LMC_ORIGINAL_BUFFER="$BUFFER"
+WIDGET="lmc-handle-expand-event"
+_lmc_finish_stream_success "none" "kubectl describe pods -A"
+print -r -- "BUFFER=$BUFFER"
+print -r -- "PRE_REDRAW_CALLS=$PRE_REDRAW_CALLS"
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("BUFFER=kubectl describe pods -A"),
+        "stdout was: {stdout}"
+    );
+    assert!(
+        stdout.contains("PRE_REDRAW_CALLS=1"),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
 fn zsh_widget_stream_success_shows_explanation_as_inline_comment_and_message() {
     let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
 

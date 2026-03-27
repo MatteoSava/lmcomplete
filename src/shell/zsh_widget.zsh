@@ -8,9 +8,11 @@ typeset -g _LMC_OUTPUT_FILE=""
 typeset -g _LMC_ERROR_FILE=""
 typeset -g _LMC_STATUS_FILE=""
 typeset -g _LMC_EVENT_FILE=""
+typeset -g _LMC_PRE_REDRAW_WIDGET="${_LMC_PRE_REDRAW_WIDGET:-}"
 typeset -gi _LMC_CLEAR_MESSAGE_ON_NEXT_REDRAW=0
 typeset -gi _LMC_MESSAGE_VISIBLE=0
 typeset -g _LMC_EXPLAIN_BUFFER=""
+typeset -gi _LMC_RUNNING_PRE_REDRAW=0
 typeset -ga _LMC_LOADING_FRAMES=('▏' '▎' '▍' '▌' '▋' '▊' '▉' '█' '▉' '▊' '▋' '▌' '▍' '▎')
 
 _lmc_default_config_path() {
@@ -105,6 +107,38 @@ _lmc_finalize_widget_display() {
       zle reset-prompt 2>/dev/null || _lmc_soft_redraw
       ;;
   esac
+}
+
+_lmc_capture_previous_line_pre_redraw() {
+  emulate -L zsh
+
+  local widget=""
+  local definition=""
+
+  definition="$(zle -l -L zle-line-pre-redraw 2>/dev/null)" || definition=""
+  if [[ "$definition" == "zle -N zle-line-pre-redraw "* ]]; then
+    widget="${definition#zle -N zle-line-pre-redraw }"
+  fi
+
+  if [[ -z "$widget" && -n "${parameters[WIDGET_HANDLERS]:-}" ]]; then
+    widget="${WIDGET_HANDLERS[zle-line-pre-redraw]:-}"
+  fi
+
+  if [[ -n "$widget" && "$widget" != "_lmc_line_pre_redraw" ]]; then
+    _LMC_PRE_REDRAW_WIDGET="$widget"
+  fi
+}
+
+_lmc_run_previous_line_pre_redraw() {
+  emulate -L zsh
+
+  local widget="${_LMC_PRE_REDRAW_WIDGET:-}"
+  [[ -n "$widget" && "$widget" != "_lmc_line_pre_redraw" ]] || return 0
+  (( _LMC_RUNNING_PRE_REDRAW )) && return 0
+
+  _LMC_RUNNING_PRE_REDRAW=1
+  "$widget" 2>/dev/null
+  _LMC_RUNNING_PRE_REDRAW=0
 }
 
 _lmc_show_error_message() {
@@ -352,26 +386,31 @@ _lmc_line_pre_redraw() {
   if (( _LMC_CLEAR_MESSAGE_ON_NEXT_REDRAW )); then
     _lmc_clear_message
     _lmc_soft_redraw
+    _lmc_run_previous_line_pre_redraw
     return 0
   fi
 
   case "${LASTWIDGET:-}" in
     lmc-expand-buffer|lmc-tab-expand-or-complete|lmc-handle-expand-event|lmc-line-pre-redraw)
+      _lmc_run_previous_line_pre_redraw
       return 0
       ;;
   esac
 
   if (( _LMC_IN_FLIGHT )); then
     _lmc_cancel_stream
+    _lmc_run_previous_line_pre_redraw
     return 0
   fi
 
   if [[ -n "$_LMC_EXPLAIN_BUFFER" && "$BUFFER" != "$_LMC_EXPLAIN_BUFFER" ]]; then
     _lmc_clear_explanation
     _lmc_soft_redraw
+    _lmc_run_previous_line_pre_redraw
     return 0
   fi
 
+  _lmc_run_previous_line_pre_redraw
 }
 
 _lmc_handle_expand_eof() {
@@ -550,10 +589,10 @@ _lmc_tab_expand_or_complete() {
   fi
 }
 
+_lmc_capture_previous_line_pre_redraw
 zle -N lmc-expand-buffer _lmc_expand_buffer
 zle -N lmc-handle-expand-event _lmc_handle_expand_event
 zle -N lmc-tab-expand-or-complete _lmc_tab_expand_or_complete
 zle -N zle-line-pre-redraw _lmc_line_pre_redraw
-
 bindkey '^[[Z' lmc-expand-buffer
 bindkey '^I' lmc-tab-expand-or-complete
