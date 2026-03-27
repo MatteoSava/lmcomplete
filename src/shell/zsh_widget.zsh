@@ -21,22 +21,43 @@ _lmc_default_config_path() {
   print -r -- "${config_root}/lmcomplete/config.toml"
 }
 
+_lmc_provider_name_from_config() {
+  emulate -L zsh
+  local config_path="$1"
+  command awk '
+    /^[[:space:]]*\[provider\][[:space:]]*$/ { in_provider=1; next }
+    /^[[:space:]]*\[/ { if (in_provider) exit }
+    in_provider && /^[[:space:]]*name[[:space:]]*=/ {
+      line = $0
+      sub(/^[[:space:]]*name[[:space:]]*=[[:space:]]*"/, "", line)
+      sub(/".*$/, "", line)
+      print line
+      exit
+    }
+  ' "$config_path"
+}
+
 _lmc_missing_provider_message() {
   emulate -L zsh
-  print -r -- "Set OPENROUTER_API_KEY or configure $(_lmc_default_config_path)"
+  print -r -- "Configure [provider] in $(_lmc_default_config_path) or set OPENROUTER_API_KEY/LMC_PROVIDER_API_KEY"
 }
 
 _lmc_has_provider_config() {
   emulate -L zsh
 
-  if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  if [[ -n "${OPENROUTER_API_KEY:-}" || -n "${LMC_PROVIDER_API_KEY:-}" ]]; then
     return 0
   fi
 
   local config_path="$(_lmc_default_config_path)"
   [[ -r "$config_path" ]] || return 1
 
-  command grep -Eq "^[[:space:]]*api_key[[:space:]]*=[[:space:]]*([\"'][^\"']+[\"'])" "$config_path"
+  if command grep -Eq "^[[:space:]]*api_key[[:space:]]*=[[:space:]]*([\"'][^\"']+[\"'])" "$config_path"; then
+    return 0
+  fi
+
+  local provider_name="$(_lmc_provider_name_from_config "$config_path")"
+  [[ "$provider_name" == "openai_compatible" || "$provider_name" == "ollama" || "$provider_name" == "lm_studio" ]]
 }
 
 _lmc_loading_indicator() {
@@ -542,7 +563,7 @@ _lmc_expand_buffer() {
     _LMC_ERROR_FILE=""
     return 1
   }
-  _LMC_EVENT_FILE="$(mktemp -u "${TMPDIR:-/tmp}/lmc-events.XXXXXX")" || {
+  _LMC_EVENT_FILE="$(mktemp "${TMPDIR:-/tmp}/lmc-events.XXXXXX")" || {
     command rm -f -- "$_LMC_ERROR_FILE" "$_LMC_STATUS_FILE"
     _LMC_ERROR_FILE=""
     _LMC_STATUS_FILE=""
@@ -550,6 +571,7 @@ _lmc_expand_buffer() {
   }
 
   command rm -f -- "$_LMC_STATUS_FILE"
+  command rm -f -- "$_LMC_EVENT_FILE"
   command mkfifo "$_LMC_EVENT_FILE" || {
     command rm -f -- "$_LMC_ERROR_FILE" "$_LMC_STATUS_FILE"
     _LMC_ERROR_FILE=""

@@ -1,6 +1,14 @@
+//! Streaming safety scaffolding for a future production TTY path.
+//!
+//! Currently `#[cfg(test)]` gated in `lib.rs` — production uses
+//! `safety::preview_expand_output` instead. Destructive patterns are consumed
+//! from `safety::DESTRUCTIVE_PATTERNS`.
+
 use std::io::Write;
 
 use anyhow::{Result, bail};
+
+use crate::safety;
 
 const WARNING_LINE: &str = "# WARNING: destructive command";
 
@@ -300,37 +308,41 @@ fn warning_prefix_possible(buffer: &str) -> bool {
 fn destructive_prefix_status(body: &str, is_eof: bool) -> PrefixDecision {
     let compact = collapse_whitespace(body);
     if compact.is_empty() {
-        return if is_eof {
-            PrefixDecision::Safe
-        } else {
-            PrefixDecision::Pending
-        };
+        return eof_or_pending(is_eof);
     }
 
     let first = compact.split(' ').next().unwrap_or_default();
     if matches_partial_root(first) {
-        return if is_eof {
-            PrefixDecision::Safe
-        } else {
-            PrefixDecision::Pending
+        return eof_or_pending(is_eof);
+    }
+
+    for pattern in safety::DESTRUCTIVE_PATTERNS {
+        if first != pattern.root {
+            continue;
+        }
+
+        return match (pattern.phrase, pattern.requires_flag) {
+            (Some(phrase), _) => phrase_prefix_status(&compact, phrase, is_eof),
+            (_, Some(_)) => git_push_force_status(&compact, is_eof),
+            _ => rm_status(&compact, is_eof),
         };
     }
 
-    match first {
-        "rm" => rm_status(&compact, is_eof),
-        "drop" => phrase_prefix_status(&compact, "drop table", is_eof),
-        "terraform" => phrase_prefix_status(&compact, "terraform destroy", is_eof),
-        "kubectl" => phrase_prefix_status(&compact, "kubectl delete", is_eof),
-        "docker" => phrase_prefix_status(&compact, "docker system prune", is_eof),
-        "git" => git_push_force_status(&compact, is_eof),
-        _ => PrefixDecision::Safe,
-    }
+    PrefixDecision::Safe
 }
 
 fn matches_partial_root(first: &str) -> bool {
-    ["rm", "drop", "git", "terraform", "kubectl", "docker"]
+    safety::DESTRUCTIVE_ROOTS
         .iter()
         .any(|root| root.starts_with(first) && *root != first)
+}
+
+fn eof_or_pending(is_eof: bool) -> PrefixDecision {
+    if is_eof {
+        PrefixDecision::Safe
+    } else {
+        PrefixDecision::Pending
+    }
 }
 
 fn rm_status(text: &str, is_eof: bool) -> PrefixDecision {

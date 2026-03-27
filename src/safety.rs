@@ -5,10 +5,54 @@ use regex::Regex;
 
 pub const DESTRUCTIVE_WARNING: &str = "# WARNING: destructive command";
 
+pub struct DestructivePattern {
+    pub root: &'static str,
+    pub phrase: Option<&'static str>,
+    pub requires_flag: Option<&'static str>,
+}
+
+pub const DESTRUCTIVE_PATTERNS: &[DestructivePattern] = &[
+    DestructivePattern { root: "rm", phrase: None, requires_flag: None },
+    DestructivePattern { root: "drop", phrase: Some("drop table"), requires_flag: None },
+    DestructivePattern { root: "git", phrase: None, requires_flag: Some("--force") },
+    DestructivePattern { root: "terraform", phrase: Some("terraform destroy"), requires_flag: None },
+    DestructivePattern { root: "kubectl", phrase: Some("kubectl delete"), requires_flag: None },
+    DestructivePattern { root: "docker", phrase: Some("docker system prune"), requires_flag: None },
+];
+
+pub const DESTRUCTIVE_ROOTS: &[&str] = &["rm", "drop", "git", "terraform", "kubectl", "docker"];
+
 static DESTRUCTIVE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)\b(rm\b|drop\s+table|git\s+push\b.*--force|terraform\s+destroy|kubectl\s+delete|docker\s+system\s+prune)\b")
-        .expect("valid destructive pattern regex")
+    let pattern = build_destructive_regex();
+    Regex::new(&pattern).expect("valid destructive pattern regex")
 });
+
+fn build_destructive_regex() -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for p in DESTRUCTIVE_PATTERNS {
+        if let Some(phrase) = p.phrase {
+            parts.push(phrase.replace(' ', r"\s+"));
+        } else if let Some(_flag) = p.requires_flag {
+            parts.push(format!(r"{}\b.*{}", p.root, regex_escape(p.requires_flag.unwrap())));
+        } else {
+            parts.push(format!(r"{}\b", p.root));
+        }
+    }
+    format!(r"(?im)\b({})\b", parts.join("|"))
+}
+
+fn regex_escape(s: &str) -> String {
+    let mut escaped = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            escaped.push(ch);
+        } else {
+            escaped.push('\\');
+            escaped.push(ch);
+        }
+    }
+    escaped
+}
 
 pub fn apply_warning(command: &str) -> String {
     let trimmed = command.trim();

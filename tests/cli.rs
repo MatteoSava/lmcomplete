@@ -165,6 +165,72 @@ data: [DONE]
 }
 
 #[test]
+fn streaming_expand_supports_ollama_without_api_key() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let captured = Arc::new(Mutex::new(String::new()));
+    let (base_url, server) = spawn_streaming_server_with_capture(
+        vec![(
+            r#"data: {"choices":[{"delta":{"content":"git status"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}
+
+data: [DONE]
+
+"#
+            .to_string(),
+            Duration::from_millis(10),
+        )],
+        captured.clone(),
+    );
+    let config_path = write_test_config_with_provider(
+        temp_dir.path(),
+        "ollama",
+        &base_url,
+        true,
+        None,
+        "llama3.2",
+    );
+
+    Command::cargo_bin("lmc")
+        .unwrap()
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "expand",
+            "show git status",
+            "--shell",
+            "zsh",
+            "--history",
+            "0",
+            "--stream-format",
+            "tty",
+        ])
+        .env("HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path().join(".config"))
+        .env("XDG_STATE_HOME", temp_dir.path().join(".state"))
+        .assert()
+        .success();
+
+    server.join().unwrap();
+
+    let request = captured.lock().unwrap().clone();
+    assert!(
+        request.contains(r#""model":"llama3.2""#),
+        "request was: {request}"
+    );
+    assert!(
+        request.contains(r#""stream":true"#),
+        "request was: {request}"
+    );
+    assert!(
+        !request.to_ascii_lowercase().contains("authorization:"),
+        "request was: {request}"
+    );
+    assert!(
+        !request.contains(r#""provider":{"#),
+        "request was: {request}"
+    );
+}
+
+#[test]
 fn explain_stream_format_tty_emits_partial_output_before_exit() {
     let temp_dir = tempfile::tempdir().unwrap();
     let (base_url, server) = spawn_streaming_server(vec![
@@ -433,6 +499,7 @@ fn zsh_widget_reports_missing_provider_config_before_starting_expand() {
 export HOME="{home}"
 export XDG_CONFIG_HOME="{home}/.config"
 unset OPENROUTER_API_KEY
+unset LMC_PROVIDER_API_KEY
 LAST_MESSAGE=""
 zle() {{
   case "$1" in
@@ -475,10 +542,67 @@ print -r -- "IN_FLIGHT=$_LMC_IN_FLIGHT"
         "stdout was: {stdout}"
     );
     assert!(
-        stdout.contains("MESSAGE=Set OPENROUTER_API_KEY or configure "),
+        stdout.contains("MESSAGE=Configure [provider] in "),
         "stdout was: {stdout}"
     );
     assert!(stdout.contains("IN_FLIGHT=0"), "stdout was: {stdout}");
+}
+
+#[test]
+fn zsh_widget_accepts_ollama_config_without_api_key() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config_root = temp_dir.path().join(".config").join("lmcomplete");
+    fs::create_dir_all(&config_root).unwrap();
+
+    let config_path = config_root.join("config.toml");
+    fs::write(
+        &config_path,
+        r#"
+[provider]
+name = "ollama"
+model = "llama3.2"
+base_url = "http://localhost:11434/v1/chat/completions"
+"#,
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let home = temp_dir.path().display();
+    let script = format!(
+        r#"
+export HOME="{home}"
+export XDG_CONFIG_HOME="{home}/.config"
+unset OPENROUTER_API_KEY
+unset LMC_PROVIDER_API_KEY
+zle() {{ :; }}
+bindkey() {{ :; }}
+source "{widget_path}"
+if _lmc_has_provider_config; then
+  print -r -- "HAS=1"
+else
+  print -r -- "HAS=0"
+fi
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("HAS=1"), "stdout was: {stdout}");
 }
 
 #[test]
@@ -1523,6 +1647,74 @@ print -r -- "IN_FLIGHT=$_LMC_IN_FLIGHT"
     assert!(stdout.contains("IN_FLIGHT=0"), "stdout was: {stdout}");
 }
 
+#[test]
+fn zsh_widget_recovers_when_expand_writes_error_done_event() {
+    let widget_path = format!("{}/src/shell/zsh_widget.zsh", env!("CARGO_MANIFEST_DIR"));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let bin_dir = temp_dir.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    // Simulate lmc expand failing: writes done with status=error then exits
+    write_fake_lmc(
+        &bin_dir,
+        "#!/bin/zsh\nprint -r -- $'done\\tstatus=error\\tmessage=API rate limit exceeded'\nexit 0\n",
+    );
+
+    let path = format!("{}:{}", bin_dir.display(), std::env::var("PATH").unwrap());
+    let script = format!(
+        r#"
+export PATH="{path}"
+export OPENROUTER_API_KEY="test-key"
+EVENT_HANDLER=""
+zle() {{
+  case "$1" in
+    -F)
+      if [[ "$2" == "-w" ]]; then
+        EVENT_HANDLER="_lmc_handle_expand_event"
+      else
+        EVENT_HANDLER="$3"
+      fi
+      ;;
+    -M|-R|-N|redisplay|expand-or-complete|reset-prompt|-I)
+      ;;
+  esac
+}}
+bindkey() {{ :; }}
+source "{widget_path}"
+BUFFER="show git status"
+CURSOR=${{#BUFFER}}
+_lmc_expand_buffer
+sleep 0.1
+integer guard=0
+while (( _LMC_IN_FLIGHT )) && (( guard < 40 )); do
+  sleep 0.05
+  $EVENT_HANDLER $_LMC_EVENT_FD
+  (( guard++ ))
+done
+print -r -- "IN_FLIGHT=$_LMC_IN_FLIGHT"
+print -r -- "BUFFER=$BUFFER"
+print -r -- "ORIGINAL=$_LMC_ORIGINAL_BUFFER"
+"#
+    );
+
+    let output = ProcessCommand::new("zsh")
+        .args(["-fc", &script])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr was: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("IN_FLIGHT=0"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("BUFFER=show git status"),
+        "stdout was: {stdout}"
+    );
+}
+
 fn write_fake_lmc(bin_dir: &Path, script: &str) {
     let lmc_path = bin_dir.join("lmc");
     fs::write(&lmc_path, script).unwrap();
@@ -1534,7 +1726,14 @@ fn write_fake_lmc(bin_dir: &Path, script: &str) {
 }
 
 fn write_test_config(dir: &Path, base_url: &str, streaming_enabled: bool) -> PathBuf {
-    write_test_config_with_model(dir, base_url, streaming_enabled, "test-model")
+    write_test_config_with_provider(
+        dir,
+        "openrouter",
+        base_url,
+        streaming_enabled,
+        Some("test-key"),
+        "test-model",
+    )
 }
 
 fn write_test_config_with_model(
@@ -1543,15 +1742,35 @@ fn write_test_config_with_model(
     streaming_enabled: bool,
     model: &str,
 ) -> PathBuf {
+    write_test_config_with_provider(
+        dir,
+        "openrouter",
+        base_url,
+        streaming_enabled,
+        Some("test-key"),
+        model,
+    )
+}
+
+fn write_test_config_with_provider(
+    dir: &Path,
+    provider_name: &str,
+    base_url: &str,
+    streaming_enabled: bool,
+    api_key: Option<&str>,
+    model: &str,
+) -> PathBuf {
     let config_path = dir.join("config.toml");
+    let api_key_line = api_key
+        .map(|value| format!("api_key = \"{value}\"\n"))
+        .unwrap_or_default();
     fs::write(
         &config_path,
         format!(
             r#"
 [provider]
-name = "openrouter"
-api_key = "test-key"
-model = "{model}"
+name = "{provider_name}"
+{api_key_line}model = "{model}"
 base_url = "{base_url}"
 
 [streaming]

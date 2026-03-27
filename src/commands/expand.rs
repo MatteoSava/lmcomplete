@@ -60,22 +60,32 @@ pub async fn run(args: ExpandArgs, config_path: Option<&Path>) -> Result<()> {
             }
         }
         ActiveStreamFormat::Widget => {
-            let response = provider
+            let result = provider
                 .expand(StructuredExpandRequest {
                     system_prompt: structured_prompt.system_prompt,
                     user_prompt: structured_prompt.user_prompt,
                 })
-                .await?;
-            UsageStats::record(&response.usage)?;
-            WidgetExpandRenderer.finish_success(&response, config.expand.explain_display)?;
-            Ok(())
+                .await;
+
+            match result {
+                Ok(response) => {
+                    UsageStats::record(&response.usage)?;
+                    WidgetExpandRenderer
+                        .finish_success(&response, config.expand.explain_display)?;
+                    Ok(())
+                }
+                Err(error) => {
+                    WidgetExpandRenderer.finish_error(&error.to_string())?;
+                    Err(error)
+                }
+            }
         }
     }
 }
 
 fn build_tty_system_prompt(shell: String, os: String) -> String {
     format!(
-        "You are a shell command generator. Given a natural language description,\nreturn ONLY the shell command. No explanation, no markdown, no backticks.\nReturn exactly one shell command on one line.\nIf multiple operations are needed, chain them on one line with shell operators such as &&, ;, or |.\nIf the command is destructive (rm -rf, DROP, --force), prefix with: # WARNING: destructive command\nShell: {shell} | OS: {os}"
+        "You are a shell command generator. Given a natural language description,\nreturn ONLY the shell command. No explanation, no markdown, no backticks.\nReturn exactly one shell command on one line.\nIf multiple operations are needed, chain them on one line with shell operators such as &&, ;, or |.\nShell: {shell} | OS: {os}"
     )
 }
 
@@ -133,6 +143,16 @@ impl CompletionEventHandler for TtyExpandRenderer {
 struct WidgetExpandRenderer;
 
 impl WidgetExpandRenderer {
+    fn finish_error(&self, message: &str) -> Result<()> {
+        emit_widget_event(
+            "done",
+            &[
+                ("status", "error".to_string()),
+                ("message", sanitize_widget_field(message)),
+            ],
+        )
+    }
+
     fn finish_success(
         &self,
         response: &StructuredExpandResponse,

@@ -13,31 +13,49 @@ use super::{
 };
 
 const EXPAND_TOOL_NAME: &str = "emit_expand_result";
+const MAX_SSE_BUFFER_SIZE: usize = 1_048_576; // 1MB — shell commands are short
 
-pub struct OpenRouterProvider {
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ChatCompletionsMode {
+    OpenRouter,
+    Standard,
+}
+
+pub struct ChatCompletionsProvider {
     client: reqwest::Client,
     endpoint: String,
-    api_key: String,
+    provider_name: String,
+    mode: ChatCompletionsMode,
     model: String,
     fallback_model: Option<String>,
     expand_response_mode: ExpandResponseMode,
 }
 
-impl OpenRouterProvider {
-    pub fn new(config: Config) -> Result<Self> {
-        let api_key = config
-            .provider_api_key()
-            .map(ToString::to_string)
-            .ok_or_else(|| anyhow!("missing OpenRouter API key"))?;
+impl ChatCompletionsProvider {
+    pub fn openrouter(config: Config) -> Result<Self> {
+        Self::new(config, ChatCompletionsMode::OpenRouter)
+    }
 
+    pub fn openai_compatible(config: Config) -> Result<Self> {
+        Self::new(config, ChatCompletionsMode::Standard)
+    }
+
+    fn new(config: Config, mode: ChatCompletionsMode) -> Result<Self> {
+        let provider_name = config.provider.name.clone();
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {api_key}"))
-                .context("failed to build authorization header")?,
-        );
-        headers.insert("X-Title", HeaderValue::from_static("lmcomplete"));
+
+        if let Some(api_key) = config.provider_api_key() {
+            headers.insert(
+                AUTHORIZATION,
+                HeaderValue::from_str(&format!("Bearer {api_key}"))
+                    .context("failed to build authorization header")?,
+            );
+        }
+
+        if mode == ChatCompletionsMode::OpenRouter {
+            headers.insert("X-Title", HeaderValue::from_static("lmcomplete"));
+        }
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -47,11 +65,19 @@ impl OpenRouterProvider {
         Ok(Self {
             client,
             endpoint: config.provider.base_url,
-            api_key,
+            provider_name,
+            mode,
             model: config.provider.model,
             fallback_model: config.provider.fallback.map(|value| value.model),
             expand_response_mode: config.expand.response_mode,
         })
+    }
+
+    fn provider_label(&self) -> &str {
+        match self.mode {
+            ChatCompletionsMode::OpenRouter => "OpenRouter",
+            ChatCompletionsMode::Standard => self.provider_name.as_str(),
+        }
     }
 
     async fn complete_with_model(
@@ -59,29 +85,28 @@ impl OpenRouterProvider {
         model: &str,
         request: &CompletionRequest,
     ) -> Result<CompletionResponse> {
-        let body = build_openrouter_request(model, request, None);
+        let body = build_chat_request(model, request, None, self.mode);
 
         let response = self
             .client
             .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
             .json(&body)
             .send()
             .await
-            .context("failed to send request to OpenRouter")?;
+            .with_context(|| format!("failed to send request to {}", self.provider_label()))?;
 
         let status = response.status();
         let raw = response
             .text()
             .await
-            .context("failed to read OpenRouter response body")?;
+            .with_context(|| format!("failed to read {} response body", self.provider_label()))?;
 
         if !status.is_success() {
-            bail!("OpenRouter returned {status}: {raw}");
+            bail!("{} returned {status}: {raw}", self.provider_label());
         }
 
-        let parsed: OpenRouterResponse =
-            serde_json::from_str(&raw).context("failed to parse OpenRouter response")?;
+        let parsed: ChatCompletionsResponse = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse {} response", self.provider_label()))?;
         let content = parsed
             .choices
             .into_iter()
@@ -89,7 +114,7 @@ impl OpenRouterProvider {
             .and_then(|choice| choice.message.content)
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| anyhow!("OpenRouter returned an empty completion"))?;
+            .ok_or_else(|| anyhow!("{} returned an empty completion", self.provider_label()))?;
 
         Ok(CompletionResponse {
             content,
@@ -102,28 +127,28 @@ impl OpenRouterProvider {
         model: &str,
         request: &StructuredExpandRequest,
     ) -> Result<StructuredExpandResponse> {
-        let body = build_structured_expand_request(model, request, self.expand_response_mode);
+        let body =
+            build_structured_expand_request(model, request, self.expand_response_mode, self.mode);
 
         let response = self
             .client
             .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
             .json(&body)
             .send()
             .await
-            .context("failed to send request to OpenRouter")?;
+            .with_context(|| format!("failed to send request to {}", self.provider_label()))?;
 
         let status = response.status();
         let raw = response
             .text()
             .await
-            .context("failed to read OpenRouter response body")?;
+            .with_context(|| format!("failed to read {} response body", self.provider_label()))?;
 
         if !status.is_success() {
-            bail!("OpenRouter returned {status}: {raw}");
+            bail!("{} returned {status}: {raw}", self.provider_label());
         }
 
-        parse_structured_expand_response(&raw, self.expand_response_mode)
+        parse_structured_expand_response(&raw, self.expand_response_mode, self.provider_label())
     }
 
     async fn stream_with_model(
@@ -132,16 +157,15 @@ impl OpenRouterProvider {
         request: &CompletionRequest,
         handler: &mut dyn CompletionEventHandler,
     ) -> std::result::Result<CompletionResponse, StreamAttemptError> {
-        let body = build_openrouter_request(model, request, Some(true));
+        let body = build_chat_request(model, request, Some(true), self.mode);
 
         let mut response = self
             .client
             .post(&self.endpoint)
-            .bearer_auth(&self.api_key)
             .json(&body)
             .send()
             .await
-            .context("failed to send request to OpenRouter")
+            .with_context(|| format!("failed to send request to {}", self.provider_label()))
             .map_err(StreamAttemptError::pre_stream)?;
 
         let status = response.status();
@@ -149,10 +173,11 @@ impl OpenRouterProvider {
             let raw = response
                 .text()
                 .await
-                .context("failed to read OpenRouter response body")
+                .with_context(|| format!("failed to read {} response body", self.provider_label()))
                 .map_err(StreamAttemptError::pre_stream)?;
             return Err(StreamAttemptError::pre_stream(anyhow!(
-                "OpenRouter returned {status}: {raw}"
+                "{} returned {status}: {raw}",
+                self.provider_label()
             )));
         }
 
@@ -164,7 +189,7 @@ impl OpenRouterProvider {
         while let Some(chunk) = response
             .chunk()
             .await
-            .context("failed to read OpenRouter stream chunk")
+            .with_context(|| format!("failed to read {} stream chunk", self.provider_label()))
             .map_err(|error| StreamAttemptError::new(error, started))?
         {
             let events = parser
@@ -176,13 +201,15 @@ impl OpenRouterProvider {
                     continue;
                 }
 
-                let parsed: OpenRouterStreamResponse = serde_json::from_str(&data)
-                    .context("failed to parse OpenRouter stream chunk")
+                let parsed: ChatCompletionsStreamResponse = serde_json::from_str(&data)
+                    .with_context(|| {
+                        format!("failed to parse {} stream chunk", self.provider_label())
+                    })
                     .map_err(|error| StreamAttemptError::new(error, started))?;
 
                 if let Some(error) = parsed.error {
                     return Err(StreamAttemptError::new(
-                        anyhow!("OpenRouter stream error: {}", error.message),
+                        anyhow!("{} stream error: {}", self.provider_label(), error.message),
                         started,
                     ));
                 }
@@ -214,7 +241,7 @@ impl OpenRouterProvider {
 
         if content.trim().is_empty() {
             return Err(StreamAttemptError::new(
-                anyhow!("OpenRouter returned an empty completion"),
+                anyhow!("{} returned an empty completion", self.provider_label()),
                 started,
             ));
         }
@@ -224,7 +251,7 @@ impl OpenRouterProvider {
 }
 
 #[async_trait]
-impl Provider for OpenRouterProvider {
+impl Provider for ChatCompletionsProvider {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse> {
         match self.complete_with_model(&self.model, &request).await {
             Ok(response) => Ok(response),
@@ -232,7 +259,7 @@ impl Provider for OpenRouterProvider {
                 let Some(fallback_model) = &self.fallback_model else {
                     return Err(primary_error);
                 };
-                if !should_use_fallback_model(&self.model, false) {
+                if !should_use_fallback_model(&self.model, false, self.mode) {
                     return Err(primary_error);
                 }
 
@@ -255,7 +282,7 @@ impl Provider for OpenRouterProvider {
                 let Some(fallback_model) = &self.fallback_model else {
                     return Err(primary_error);
                 };
-                if !should_use_fallback_model(&self.model, false) {
+                if !should_use_fallback_model(&self.model, false, self.mode) {
                     return Err(primary_error);
                 }
 
@@ -283,7 +310,7 @@ impl Provider for OpenRouterProvider {
                     return Err(primary_error.error);
                 };
 
-                if !should_use_fallback_model(&self.model, primary_error.started) {
+                if !should_use_fallback_model(&self.model, primary_error.started, self.mode) {
                     return Err(primary_error.error);
                 }
 
@@ -304,7 +331,7 @@ impl Provider for OpenRouterProvider {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenRouterRequest {
+struct ChatCompletionsRequest {
     model: String,
     messages: Vec<Message>,
     max_tokens: Option<u32>,
@@ -326,24 +353,24 @@ struct Message {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterResponse {
-    choices: Vec<OpenRouterChoice>,
-    usage: Option<OpenRouterUsage>,
+struct ChatCompletionsResponse {
+    choices: Vec<ChatCompletionsChoice>,
+    usage: Option<ChatCompletionsUsage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterChoice {
-    message: OpenRouterMessage,
+struct ChatCompletionsChoice {
+    message: ChatCompletionsMessage,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterMessage {
+struct ChatCompletionsMessage {
     content: Option<String>,
-    tool_calls: Option<Vec<OpenRouterToolCall>>,
+    tool_calls: Option<Vec<ChatCompletionsToolCall>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct OpenRouterUsage {
+struct ChatCompletionsUsage {
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
     total_tokens: Option<u64>,
@@ -357,34 +384,34 @@ struct OpenRouterProviderPreferences {
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterStreamResponse {
-    choices: Vec<OpenRouterStreamChoice>,
-    usage: Option<OpenRouterUsage>,
-    error: Option<OpenRouterStreamError>,
+struct ChatCompletionsStreamResponse {
+    choices: Vec<ChatCompletionsStreamChoice>,
+    usage: Option<ChatCompletionsUsage>,
+    error: Option<ChatCompletionsStreamError>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterStreamChoice {
-    delta: Option<OpenRouterStreamDelta>,
+struct ChatCompletionsStreamChoice {
+    delta: Option<ChatCompletionsStreamDelta>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterStreamDelta {
+struct ChatCompletionsStreamDelta {
     content: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterStreamError {
+struct ChatCompletionsStreamError {
     message: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterToolCall {
-    function: OpenRouterFunctionCall,
+struct ChatCompletionsToolCall {
+    function: ChatCompletionsFunctionCall,
 }
 
 #[derive(Debug, Deserialize)]
-struct OpenRouterFunctionCall {
+struct ChatCompletionsFunctionCall {
     name: String,
     arguments: String,
 }
@@ -421,8 +448,8 @@ struct ToolChoiceFunction {
     name: &'static str,
 }
 
-impl From<OpenRouterUsage> for Usage {
-    fn from(value: OpenRouterUsage) -> Self {
+impl From<ChatCompletionsUsage> for Usage {
+    fn from(value: ChatCompletionsUsage) -> Self {
         Self {
             prompt_tokens: value.prompt_tokens,
             completion_tokens: value.completion_tokens,
@@ -445,7 +472,14 @@ struct RoutedModel {
 }
 
 impl RoutedModel {
-    fn new(model: &str) -> Self {
+    fn new(model: &str, mode: ChatCompletionsMode) -> Self {
+        if mode != ChatCompletionsMode::OpenRouter {
+            return Self {
+                model: model.to_string(),
+                provider: None,
+            };
+        }
+
         let Some((base_model, provider_slug)) = split_provider_suffix(model) else {
             return Self {
                 model: model.to_string(),
@@ -475,21 +509,30 @@ fn split_provider_suffix(model: &str) -> Option<(&str, &str)> {
     Some((base_model, suffix))
 }
 
-fn should_use_fallback_model(primary_model: &str, started_streaming: bool) -> bool {
+fn should_use_fallback_model(
+    primary_model: &str,
+    started_streaming: bool,
+    mode: ChatCompletionsMode,
+) -> bool {
     if started_streaming {
         return false;
     }
 
-    split_provider_suffix(primary_model).is_none()
+    if mode == ChatCompletionsMode::OpenRouter {
+        return split_provider_suffix(primary_model).is_none();
+    }
+
+    true
 }
 
-fn build_openrouter_request(
+fn build_chat_request(
     model: &str,
     request: &CompletionRequest,
     stream: Option<bool>,
-) -> OpenRouterRequest {
-    let routing = RoutedModel::new(model);
-    OpenRouterRequest {
+    mode: ChatCompletionsMode,
+) -> ChatCompletionsRequest {
+    let routing = RoutedModel::new(model, mode);
+    ChatCompletionsRequest {
         model: routing.model,
         messages: vec![
             Message {
@@ -514,8 +557,9 @@ fn build_structured_expand_request(
     model: &str,
     request: &StructuredExpandRequest,
     response_mode: ExpandResponseMode,
-) -> OpenRouterRequest {
-    let routing = RoutedModel::new(model);
+    mode: ChatCompletionsMode,
+) -> ChatCompletionsRequest {
+    let routing = RoutedModel::new(model, mode);
     let (tools, tool_choice) = match response_mode {
         ExpandResponseMode::ToolCall => (
             Some(vec![expand_tool_definition()]),
@@ -524,7 +568,7 @@ fn build_structured_expand_request(
         ExpandResponseMode::MessageJson => (None, None),
     };
 
-    OpenRouterRequest {
+    ChatCompletionsRequest {
         model: routing.model,
         messages: vec![
             Message {
@@ -548,29 +592,32 @@ fn build_structured_expand_request(
 fn parse_structured_expand_response(
     raw: &str,
     response_mode: ExpandResponseMode,
+    provider_label: &str,
 ) -> Result<StructuredExpandResponse> {
-    let parsed: OpenRouterResponse =
-        serde_json::from_str(raw).context("failed to parse OpenRouter response")?;
+    let parsed: ChatCompletionsResponse = serde_json::from_str(raw)
+        .with_context(|| format!("failed to parse {provider_label} response"))?;
     let usage = parsed.usage.unwrap_or_default().into();
     let choice = parsed
         .choices
         .into_iter()
         .next()
-        .ok_or_else(|| anyhow!("OpenRouter returned no completion choices"))?;
+        .ok_or_else(|| anyhow!("{provider_label} returned no completion choices"))?;
 
     let payload = match response_mode {
-        ExpandResponseMode::ToolCall => parse_tool_call_payload(choice.message)?,
-        ExpandResponseMode::MessageJson => parse_message_json_payload(choice.message)?,
+        ExpandResponseMode::ToolCall => parse_tool_call_payload(choice.message, provider_label)?,
+        ExpandResponseMode::MessageJson => {
+            parse_message_json_payload(choice.message, provider_label)?
+        }
     };
 
     let command = payload.command.trim();
     if command.is_empty() {
-        bail!("OpenRouter returned an empty expand command");
+        bail!("{provider_label} returned an empty expand command");
     }
 
     let explanation = payload.explanation.trim();
     if explanation.is_empty() {
-        bail!("OpenRouter returned an empty expand explanation");
+        bail!("{provider_label} returned an empty expand explanation");
     }
 
     Ok(StructuredExpandResponse {
@@ -580,7 +627,10 @@ fn parse_structured_expand_response(
     })
 }
 
-fn parse_tool_call_payload(message: OpenRouterMessage) -> Result<ExpandPayload> {
+fn parse_tool_call_payload(
+    message: ChatCompletionsMessage,
+    provider_label: &str,
+) -> Result<ExpandPayload> {
     let tool_call = message
         .tool_calls
         .and_then(|calls| {
@@ -588,18 +638,21 @@ fn parse_tool_call_payload(message: OpenRouterMessage) -> Result<ExpandPayload> 
                 .into_iter()
                 .find(|call| call.function.name == EXPAND_TOOL_NAME)
         })
-        .ok_or_else(|| anyhow!("OpenRouter did not return the required expand tool call"))?;
+        .ok_or_else(|| anyhow!("{provider_label} did not return the required expand tool call"))?;
 
     serde_json::from_str(&tool_call.function.arguments)
         .context("failed to parse expand tool call arguments")
 }
 
-fn parse_message_json_payload(message: OpenRouterMessage) -> Result<ExpandPayload> {
+fn parse_message_json_payload(
+    message: ChatCompletionsMessage,
+    provider_label: &str,
+) -> Result<ExpandPayload> {
     let content = message
         .content
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("OpenRouter returned an empty completion"))?;
+        .ok_or_else(|| anyhow!("{provider_label} returned an empty completion"))?;
 
     serde_json::from_str(&content).context("failed to parse expand JSON response")
 }
@@ -655,6 +708,9 @@ struct SseParser {
 
 impl SseParser {
     fn push(&mut self, chunk: &[u8]) -> Result<Vec<String>> {
+        if self.buffer.len().saturating_add(chunk.len()) > MAX_SSE_BUFFER_SIZE {
+            bail!("SSE buffer exceeded {} bytes", MAX_SSE_BUFFER_SIZE);
+        }
         self.buffer.extend_from_slice(chunk);
         let mut events = Vec::new();
 
@@ -678,7 +734,7 @@ impl SseParser {
         if trailing.trim().is_empty() {
             Ok(())
         } else {
-            bail!("OpenRouter stream ended with an incomplete SSE event")
+            bail!("stream ended with an incomplete SSE event")
         }
     }
 }
@@ -706,7 +762,7 @@ fn find_event_boundary(buffer: &[u8]) -> Option<(usize, usize)> {
 }
 
 fn parse_sse_event(event: &[u8]) -> Result<Option<String>> {
-    let text = std::str::from_utf8(event).context("OpenRouter SSE event was not valid UTF-8")?;
+    let text = std::str::from_utf8(event).context("stream event was not valid UTF-8")?;
     let mut data = Vec::new();
 
     for raw_line in text.lines() {
@@ -730,17 +786,17 @@ fn parse_sse_event(event: &[u8]) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionRequest, OpenRouterStreamResponse, OpenRouterUsage, RoutedModel, SseParser,
-        build_openrouter_request, find_event_boundary, parse_message_json_payload, parse_sse_event,
-        parse_structured_expand_response, parse_tool_call_payload, should_use_fallback_model,
-        split_provider_suffix,
+        ChatCompletionsMode, ChatCompletionsStreamResponse, ChatCompletionsUsage,
+        CompletionRequest, RoutedModel, SseParser, build_chat_request, find_event_boundary,
+        parse_message_json_payload, parse_sse_event, parse_structured_expand_response,
+        parse_tool_call_payload, should_use_fallback_model, split_provider_suffix,
     };
     use crate::config::ExpandResponseMode;
     use crate::provider::Usage;
 
     #[test]
     fn converts_usage() {
-        let usage = Usage::from(OpenRouterUsage {
+        let usage = Usage::from(ChatCompletionsUsage {
             prompt_tokens: Some(10),
             completion_tokens: Some(20),
             total_tokens: Some(30),
@@ -753,7 +809,7 @@ mod tests {
     #[test]
     fn parses_sse_comments_and_content_chunks() {
         let mut parser = SseParser::default();
-        let mut events = parser.push(b": OPENROUTER PROCESSING\n\n").unwrap();
+        let mut events = parser.push(b": provider processing\n\n").unwrap();
         assert!(events.is_empty());
 
         events.extend(
@@ -769,8 +825,8 @@ data: {"choices":[{"delta":{"content":"status"}}]}
         );
 
         assert_eq!(events.len(), 2);
-        let first: OpenRouterStreamResponse = serde_json::from_str(&events[0]).unwrap();
-        let second: OpenRouterStreamResponse = serde_json::from_str(&events[1]).unwrap();
+        let first: ChatCompletionsStreamResponse = serde_json::from_str(&events[0]).unwrap();
+        let second: ChatCompletionsStreamResponse = serde_json::from_str(&events[1]).unwrap();
         assert_eq!(
             first.choices[0].delta.as_ref().unwrap().content.as_deref(),
             Some("git ")
@@ -790,7 +846,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
         .unwrap()
         .unwrap();
 
-        let parsed: OpenRouterStreamResponse = serde_json::from_str(&event).unwrap();
+        let parsed: ChatCompletionsStreamResponse = serde_json::from_str(&event).unwrap();
         let usage = Usage::from(parsed.usage.unwrap());
         assert_eq!(usage.prompt_tokens, Some(1));
         assert_eq!(usage.completion_tokens, Some(2));
@@ -814,11 +870,18 @@ data: {"choices":[{"delta":{"content":"status"}}]}
 
     #[test]
     fn routes_provider_suffixes_via_provider_preferences() {
-        let routed = RoutedModel::new("openai/gpt-oss-120b:groq");
+        let routed = RoutedModel::new("openai/gpt-oss-120b:groq", ChatCompletionsMode::OpenRouter);
         assert_eq!(routed.model, "openai/gpt-oss-120b");
         let provider = routed.provider.unwrap();
         assert_eq!(provider.only, vec!["groq"]);
         assert!(!provider.allow_fallbacks);
+    }
+
+    #[test]
+    fn preserves_model_name_for_standard_endpoints() {
+        let routed = RoutedModel::new("llama3.2:latest", ChatCompletionsMode::Standard);
+        assert_eq!(routed.model, "llama3.2:latest");
+        assert!(routed.provider.is_none());
     }
 
     #[test]
@@ -831,24 +894,62 @@ data: {"choices":[{"delta":{"content":"status"}}]}
     fn disables_model_fallback_for_provider_pinned_models() {
         assert!(!should_use_fallback_model(
             "openai/gpt-oss-120b:groq",
-            false
+            false,
+            ChatCompletionsMode::OpenRouter
         ));
-        assert!(!should_use_fallback_model("openai/gpt-oss-120b", true));
-        assert!(should_use_fallback_model("openai/gpt-oss-120b", false));
+        assert!(!should_use_fallback_model(
+            "openai/gpt-oss-120b",
+            true,
+            ChatCompletionsMode::OpenRouter
+        ));
+        assert!(should_use_fallback_model(
+            "openai/gpt-oss-120b",
+            false,
+            ChatCompletionsMode::OpenRouter
+        ));
+        assert!(should_use_fallback_model(
+            "llama3.2",
+            false,
+            ChatCompletionsMode::Standard
+        ));
     }
 
     #[test]
     fn uses_zero_temperature() {
-        let request = build_openrouter_request(
+        let request = build_chat_request(
             "openai/gpt-oss-120b:groq",
             &CompletionRequest {
                 system_prompt: "system".into(),
                 user_prompt: "user".into(),
             },
             Some(true),
+            ChatCompletionsMode::OpenRouter,
         );
 
         assert_eq!(request.temperature, Some(0.0));
+    }
+
+    #[test]
+    fn omits_provider_preferences_for_standard_endpoints() {
+        let request = build_chat_request(
+            "llama3.2",
+            &CompletionRequest {
+                system_prompt: "system".into(),
+                user_prompt: "user".into(),
+            },
+            Some(true),
+            ChatCompletionsMode::Standard,
+        );
+
+        assert!(request.provider.is_none());
+    }
+
+    #[test]
+    fn rejects_sse_buffer_exceeding_limit() {
+        let mut parser = SseParser::default();
+        let oversized = vec![b'x'; 1_048_577];
+        let error = parser.push(&oversized).unwrap_err();
+        assert!(error.to_string().contains("SSE buffer exceeded"));
     }
 
     #[test]
@@ -869,6 +970,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
   "usage": { "total_tokens": 12 }
 }"#,
             ExpandResponseMode::ToolCall,
+            "provider",
         )
         .unwrap();
 
@@ -888,6 +990,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
   }]
 }"#,
             ExpandResponseMode::ToolCall,
+            "provider",
         )
         .unwrap_err();
 
@@ -905,6 +1008,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
   }]
 }"#,
             ExpandResponseMode::MessageJson,
+            "provider",
         )
         .unwrap();
 
@@ -923,6 +1027,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
   }]
 }"#,
             ExpandResponseMode::MessageJson,
+            "provider",
         )
         .unwrap_err();
 
@@ -956,6 +1061,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
 }"#,
             )
             .unwrap(),
+            "provider",
         )
         .unwrap();
 
@@ -971,6 +1077,7 @@ data: {"choices":[{"delta":{"content":"status"}}]}
 }"#,
             )
             .unwrap(),
+            "provider",
         )
         .unwrap();
 
