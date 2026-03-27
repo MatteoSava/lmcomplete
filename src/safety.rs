@@ -6,7 +6,7 @@ use regex::Regex;
 pub const DESTRUCTIVE_WARNING: &str = "# WARNING: destructive command";
 
 static DESTRUCTIVE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)\b(rm\s+-rf|drop\s+table|git\s+push\b.*--force|terraform\s+destroy|kubectl\s+delete|docker\s+system\s+prune)\b")
+    Regex::new(r"(?im)\b(rm\b|drop\s+table|git\s+push\b.*--force|terraform\s+destroy|kubectl\s+delete|docker\s+system\s+prune)\b")
         .expect("valid destructive pattern regex")
 });
 
@@ -139,6 +139,12 @@ mod tests {
     #[test]
     fn prefixes_destructive_commands() {
         let output = apply_warning("rm -rf tmp");
+        assert!(output.starts_with("# WARNING: destructive command"));
+    }
+
+    #[test]
+    fn prefixes_plain_file_delete_commands() {
+        let output = apply_warning("rm notes.txt");
         assert!(output.starts_with("# WARNING: destructive command"));
     }
 

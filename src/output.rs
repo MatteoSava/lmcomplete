@@ -317,7 +317,7 @@ fn destructive_prefix_status(body: &str, is_eof: bool) -> PrefixDecision {
     }
 
     match first {
-        "rm" => phrase_prefix_status(&compact, "rm -rf", is_eof),
+        "rm" => rm_status(&compact, is_eof),
         "drop" => phrase_prefix_status(&compact, "drop table", is_eof),
         "terraform" => phrase_prefix_status(&compact, "terraform destroy", is_eof),
         "kubectl" => phrase_prefix_status(&compact, "kubectl delete", is_eof),
@@ -331,6 +331,26 @@ fn matches_partial_root(first: &str) -> bool {
     ["rm", "drop", "git", "terraform", "kubectl", "docker"]
         .iter()
         .any(|root| root.starts_with(first) && *root != first)
+}
+
+fn rm_status(text: &str, is_eof: bool) -> PrefixDecision {
+    let Some(rest) = text.strip_prefix("rm") else {
+        return PrefixDecision::Safe;
+    };
+
+    if rest.is_empty() {
+        return if is_eof {
+            PrefixDecision::Destructive
+        } else {
+            PrefixDecision::Pending
+        };
+    }
+
+    if starts_with_non_word(rest) {
+        PrefixDecision::Destructive
+    } else {
+        PrefixDecision::Safe
+    }
 }
 
 fn phrase_prefix_status(text: &str, phrase: &str, is_eof: bool) -> PrefixDecision {
@@ -496,6 +516,22 @@ mod tests {
         assert_eq!(
             String::from_utf8(sink).unwrap(),
             "# WARNING: destructive command\nrm -rf tmp\n"
+        );
+    }
+
+    #[test]
+    fn expand_output_adds_warning_for_plain_file_delete_command() {
+        let mut output = ExpandOutput::default();
+        let mut sink = Vec::new();
+
+        output.push("rm no", &mut sink).unwrap();
+        output.push("tes.txt", &mut sink).unwrap();
+        let rendered = output.finish(&mut sink).unwrap();
+
+        assert_eq!(rendered, "# WARNING: destructive command\nrm notes.txt");
+        assert_eq!(
+            String::from_utf8(sink).unwrap(),
+            "# WARNING: destructive command\nrm notes.txt\n"
         );
     }
 
