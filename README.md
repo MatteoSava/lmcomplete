@@ -1,5 +1,8 @@
 # lmcomplete / `lmc`
 
+[![CI](https://github.com/MatteoSava/lmcomplete/actions/workflows/ci.yml/badge.svg)](https://github.com/MatteoSava/lmcomplete/actions/workflows/ci.yml)
+[![CD](https://github.com/MatteoSava/lmcomplete/actions/workflows/cd.yml/badge.svg)](https://github.com/MatteoSava/lmcomplete/actions/workflows/cd.yml)
+
 `lmcomplete` is a context-aware shell command helper for turning natural-language requests into shell commands and short explanations. The `lmc` binary uses your shell, current directory, git state, and recent command history to produce tighter results than a plain prompt.
 
 It is intentionally small and opinionated in v1:
@@ -153,6 +156,12 @@ chmod 600 ~/.config/lmcomplete/config.toml
 If `init zsh` does nothing after you run it, add `eval "$(lmc init zsh)"` to `~/.zshrc`, then restart zsh or source the file.
 
 If `expand` or `explain` returns an error about the provider, check network access, the OpenRouter API key, and the model configuration in your config file.
+
+## CI/CD
+
+CI runs on pushes, pull requests, and manual dispatch. It checks version metadata, formatting, clippy, tests, and a `cargo publish --dry-run`.
+
+CD runs when a `vX.Y.Z` tag is pushed. It verifies the tag matches `Cargo.toml` and `CHANGELOG.md`, repeats the CI checks, publishes to crates.io with `CARGO_REGISTRY_TOKEN`, and creates a GitHub release.
 
 ## Changelog
 

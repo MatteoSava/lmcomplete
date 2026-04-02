@@ -1,4 +1,4 @@
-name: Release
+name: CD
 
 on:
   push:
@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Publish Release
@@ -15,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
 
@@ -25,9 +29,7 @@ jobs:
           sudo apt-get install -y zsh
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+        run: rustup toolchain install --profile minimal --component rustfmt,clippy
 
       - name: Resolve package version
         id: version
