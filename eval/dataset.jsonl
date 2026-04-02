@@ -1,0 +1,5 @@
+{"id":"git-001","tier":"T1","input":"commit all changes with message fix login bug","expected":"git add -A && git commit -m 'fix login bug'","domain":"git","context":{"cwd_type":"git"}}
+{"id":"git-002","tier":"T1","input":"show me the last three commits","expected":"git log --oneline -3","domain":"git","context":{"cwd_type":"git"}}
+{"id":"docker-001","tier":"T1","input":"build the docker image tagged api:dev","expected":"docker build -t api:dev .","domain":"docker","context":{"cwd_type":"docker"}}
+{"id":"k8s-001","tier":"T1","input":"show pods in the current namespace","expected":"kubectl get pods","domain":"kubernetes","context":{"cwd_type":"k8s"}}
+{"id":"ctx-001","tier":"T3","input":"undo that","expected":"git reset --soft HEAD~1","domain":"git","context":{"cwd_type":"git","history":["git commit -m 'wip'"]}}

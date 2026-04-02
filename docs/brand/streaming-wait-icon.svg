@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-labelledby="title desc" style="color:#121416">
+  <title id="title">lmcomplete icon</title>
+  <desc id="desc">A terminal-native symbol where a block cursor transforms into a prompt chevron.</desc>
+  <g fill="currentColor" fill-rule="evenodd">
+    <path d="M24 28H84L112 56H144L184 96L144 136H112L84 164H24V28ZM56 52H72V140H56V52ZM88 64L120 96L88 128H74L106 96L74 64H88Z"/>
+  </g>
+</svg>

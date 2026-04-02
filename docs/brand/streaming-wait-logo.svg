@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 240" role="img" aria-labelledby="title desc" style="color:#121416">
+  <title id="title">lmcomplete logo</title>
+  <desc id="desc">Combination mark for lmcomplete pairing a cursor-to-prompt symbol with the wordmark.</desc>
+  <g fill="currentColor" fill-rule="evenodd">
+    <path d="M24 52H84L112 80H144L184 120L144 160H112L84 188H24V52ZM56 76H72V164H56V76ZM88 88L120 120L88 152H74L106 120L74 88H88Z"/>
+  </g>
+  <text
+    x="236"
+    y="146"
+    fill="currentColor"
+    font-family="Avenir Next, IBM Plex Sans, Helvetica Neue, Arial, sans-serif"
+    font-size="88"
+    font-weight="600"
+    letter-spacing="-2.5"
+    text-rendering="geometricPrecision"
+  >lmcomplete</text>
+</svg>

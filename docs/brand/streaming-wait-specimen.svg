@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1440 980" role="img" aria-labelledby="title desc">
+  <title id="title">lmcomplete specimen board</title>
+  <desc id="desc">Specimen board showing the lmcomplete logo in light and dark GitHub-style contexts, with icon scale checks.</desc>
+  <defs>
+    <style>
+      .label {
+        font-family: Avenir Next, IBM Plex Sans, Helvetica Neue, Arial, sans-serif;
+        font-size: 20px;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+      }
+      .meta {
+        font-family: Avenir Next, IBM Plex Sans, Helvetica Neue, Arial, sans-serif;
+        font-size: 18px;
+        font-weight: 500;
+      }
+      .display {
+        font-family: Avenir Next, IBM Plex Sans, Helvetica Neue, Arial, sans-serif;
+        font-size: 88px;
+        font-weight: 600;
+        letter-spacing: -2.5px;
+      }
+      .small {
+        font-family: Avenir Next, IBM Plex Sans, Helvetica Neue, Arial, sans-serif;
+        font-size: 15px;
+        font-weight: 500;
+      }
+    </style>
+    <g id="sw-icon" fill-rule="evenodd">
+      <path d="M24 28H84L112 56H144L184 96L144 136H112L84 164H24V28ZM56 52H72V140H56V52ZM88 64L120 96L88 128H74L106 96L74 64H88Z"/>
+    </g>
+  </defs>
+
+  <rect width="1440" height="980" fill="#e9e1d3"/>
+
+  <rect x="40" y="40" width="1360" height="360" rx="28" fill="#f7f3ec"/>
+  <text x="88" y="98" fill="#746d62" class="label">GitHub / Light</text>
+  <g transform="translate(84 124)" fill="#121416">
+    <use href="#sw-icon"/>
+    <text x="236" y="122" class="display">lmcomplete</text>
+  </g>
+  <text x="88" y="344" fill="#6f675d" class="meta">Primary lockup on warm off-white, tuned for README headers and docs surfaces.</text>
+
+  <rect x="40" y="430" width="1360" height="280" rx="28" fill="#121416"/>
+  <text x="88" y="488" fill="#aeb5b7" class="label">GitHub / Dark</text>
+  <g transform="translate(84 500)" fill="#f3efe6">
+    <use href="#sw-icon"/>
+    <text x="236" y="122" class="display">lmcomplete</text>
+  </g>
+  <text x="88" y="680" fill="#9ca4a6" class="meta">Inverted mark for dark shells and dark documentation themes.</text>
+
+  <rect x="40" y="740" width="1360" height="200" rx="28" fill="#efe6d8"/>
+  <text x="88" y="798" fill="#746d62" class="label">Scale Checks</text>
+
+  <g fill="#121416">
+    <g transform="translate(104 836) scale(0.0833333)">
+      <use href="#sw-icon"/>
+    </g>
+    <g transform="translate(190 828) scale(0.1666667)">
+      <use href="#sw-icon"/>
+    </g>
+    <g transform="translate(316 772) scale(0.6666667)">
+      <use href="#sw-icon"/>
+    </g>
+    <rect x="520" y="780" width="112" height="112" rx="24" fill="#121416"/>
+    <g transform="translate(514 772) scale(0.6)">
+      <use href="#sw-icon" fill="#f7f3ec"/>
+    </g>
+  </g>
+
+  <text x="102" y="930" fill="#6f675d" class="small">16px</text>
+  <text x="184" y="930" fill="#6f675d" class="small">32px</text>
+  <text x="350" y="930" fill="#6f675d" class="small">128px</text>
+  <text x="536" y="930" fill="#6f675d" class="small">Avatar crop</text>
+  <text x="760" y="852" fill="#6f675d" class="meta">Dense left cursor mass, sliced transition, prompt-facing exit.</text>
+  <text x="760" y="888" fill="#6f675d" class="meta">Built for terminal-native surfaces, not media-playback metaphors.</text>
+</svg>
