@@ -1894,8 +1894,14 @@ fn run_scripted_zsh_session(zshrc: &str, input_steps: Vec<(Duration, Vec<u8>)>) 
     let log_path = temp_dir.path().join("typescript");
     fs::write(&zshrc_path, zshrc).unwrap();
 
-    let mut child = ProcessCommand::new("/usr/bin/script")
-        .args(["-q", log_path.to_str().unwrap(), "zsh", "-i"])
+    let mut command = ProcessCommand::new("/usr/bin/script");
+    if cfg!(target_os = "linux") {
+        command.args(["-q", "-c", "zsh -i", log_path.to_str().unwrap()]);
+    } else {
+        command.args(["-q", log_path.to_str().unwrap(), "zsh", "-i"]);
+    }
+
+    let mut child = command
         .env("HOME", temp_dir.path())
         .env("ZDOTDIR", temp_dir.path())
         .stdin(Stdio::piped())
