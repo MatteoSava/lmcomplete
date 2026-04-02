@@ -275,16 +275,11 @@ impl CommandBodyRenderer {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 enum SafetyState {
+    #[default]
     Buffering,
     Streaming,
-}
-
-impl Default for SafetyState {
-    fn default() -> Self {
-        Self::Buffering
-    }
 }
 
 impl SafetyState {

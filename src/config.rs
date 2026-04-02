@@ -51,23 +51,25 @@ pub struct StreamingConfig {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExpandConfig {
     pub response_mode: ExpandResponseMode,
     pub explain_display: ExplainDisplay,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExpandResponseMode {
+    #[default]
     ToolCall,
     MessageJson,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExplainDisplay {
+    #[default]
     Both,
     Inline,
     Message,
@@ -104,27 +106,6 @@ impl Default for HistoryConfig {
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self { enabled: true }
-    }
-}
-
-impl Default for ExpandConfig {
-    fn default() -> Self {
-        Self {
-            response_mode: ExpandResponseMode::default(),
-            explain_display: ExplainDisplay::default(),
-        }
-    }
-}
-
-impl Default for ExpandResponseMode {
-    fn default() -> Self {
-        Self::ToolCall
-    }
-}
-
-impl Default for ExplainDisplay {
-    fn default() -> Self {
-        Self::Both
     }
 }
 

@@ -3,9 +3,9 @@ mod openrouter;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::config::Config;
+use crate::config::{Config, ProviderKind};
 
-pub use openrouter::OpenRouterProvider;
+use openrouter::ChatCompletionsProvider;
 
 #[derive(Debug, Clone)]
 pub struct CompletionRequest {
@@ -57,8 +57,12 @@ pub trait Provider: Send + Sync {
 
 pub fn build(config: &Config) -> Result<Box<dyn Provider>> {
     config.require_provider_config()?;
-    match config.provider.name.as_str() {
-        "openrouter" => Ok(Box::new(OpenRouterProvider::new(config.clone())?)),
-        other => Err(anyhow::anyhow!("unsupported provider '{other}'")),
+    match config.provider_kind()? {
+        ProviderKind::OpenRouter => Ok(Box::new(ChatCompletionsProvider::openrouter(
+            config.clone(),
+        )?)),
+        ProviderKind::OpenAiCompatible => Ok(Box::new(ChatCompletionsProvider::openai_compatible(
+            config.clone(),
+        )?)),
     }
 }
