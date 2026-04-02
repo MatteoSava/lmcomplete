@@ -27,8 +27,19 @@ Launch support is intentionally narrow:
 
 ## Demo
 
-- [Quick terminal demo](./docs/demo/demo.mp4)
-- [Full `lmc` workflow demo](./docs/demo/lmc-demo.mp4)
+Quick terminal demo:
+
+<picture>
+  <source srcset="./docs/demo/demo.gif" type="image/gif">
+  <img src="./docs/demo/demo.gif" alt="Quick terminal demo">
+</picture>
+
+Full `lmc` workflow demo:
+
+<picture>
+  <source srcset="./docs/demo/lmc-demo.gif" type="image/gif">
+  <img src="./docs/demo/lmc-demo.gif" alt="Full lmc workflow demo">
+</picture>
 
 ## Install
 
