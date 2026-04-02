@@ -59,18 +59,25 @@ impl UsageStats {
 
         let tmp_path = path.with_extension(format!("tmp.{}", std::process::id()));
         {
-            let mut file = fs::File::create_new(&tmp_path)
-                .with_context(|| format!("failed to create temp stats file {}", tmp_path.display()))?;
+            let mut file = fs::File::create_new(&tmp_path).with_context(|| {
+                format!("failed to create temp stats file {}", tmp_path.display())
+            })?;
             #[cfg(unix)]
             file.set_permissions(fs::Permissions::from_mode(0o600))
                 .with_context(|| format!("failed to set permissions on {}", tmp_path.display()))?;
-            file.write_all(raw.as_bytes())
-                .with_context(|| format!("failed to write temp stats file {}", tmp_path.display()))?;
+            file.write_all(raw.as_bytes()).with_context(|| {
+                format!("failed to write temp stats file {}", tmp_path.display())
+            })?;
             file.sync_all()
                 .with_context(|| "failed to sync temp stats file")?;
         }
-        fs::rename(&tmp_path, &path)
-            .with_context(|| format!("failed to rename {} to {}", tmp_path.display(), path.display()))?;
+        fs::rename(&tmp_path, &path).with_context(|| {
+            format!(
+                "failed to rename {} to {}",
+                tmp_path.display(),
+                path.display()
+            )
+        })?;
         Ok(())
     }
 }
@@ -132,11 +139,7 @@ mod tests {
         }
         std::fs::rename(&tmp_file, &stats_file).unwrap();
 
-        let mode = std::fs::metadata(&stats_file)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
+        let mode = std::fs::metadata(&stats_file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
 

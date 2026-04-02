@@ -12,12 +12,36 @@ pub struct DestructivePattern {
 }
 
 pub const DESTRUCTIVE_PATTERNS: &[DestructivePattern] = &[
-    DestructivePattern { root: "rm", phrase: None, requires_flag: None },
-    DestructivePattern { root: "drop", phrase: Some("drop table"), requires_flag: None },
-    DestructivePattern { root: "git", phrase: None, requires_flag: Some("--force") },
-    DestructivePattern { root: "terraform", phrase: Some("terraform destroy"), requires_flag: None },
-    DestructivePattern { root: "kubectl", phrase: Some("kubectl delete"), requires_flag: None },
-    DestructivePattern { root: "docker", phrase: Some("docker system prune"), requires_flag: None },
+    DestructivePattern {
+        root: "rm",
+        phrase: None,
+        requires_flag: None,
+    },
+    DestructivePattern {
+        root: "drop",
+        phrase: Some("drop table"),
+        requires_flag: None,
+    },
+    DestructivePattern {
+        root: "git",
+        phrase: None,
+        requires_flag: Some("--force"),
+    },
+    DestructivePattern {
+        root: "terraform",
+        phrase: Some("terraform destroy"),
+        requires_flag: None,
+    },
+    DestructivePattern {
+        root: "kubectl",
+        phrase: Some("kubectl delete"),
+        requires_flag: None,
+    },
+    DestructivePattern {
+        root: "docker",
+        phrase: Some("docker system prune"),
+        requires_flag: None,
+    },
 ];
 
 pub const DESTRUCTIVE_ROOTS: &[&str] = &["rm", "drop", "git", "terraform", "kubectl", "docker"];
@@ -33,7 +57,11 @@ fn build_destructive_regex() -> String {
         if let Some(phrase) = p.phrase {
             parts.push(phrase.replace(' ', r"\s+"));
         } else if let Some(_flag) = p.requires_flag {
-            parts.push(format!(r"{}\b.*{}", p.root, regex_escape(p.requires_flag.unwrap())));
+            parts.push(format!(
+                r"{}\b.*{}",
+                p.root,
+                regex_escape(p.requires_flag.unwrap())
+            ));
         } else {
             parts.push(format!(r"{}\b", p.root));
         }
