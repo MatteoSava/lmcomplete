@@ -1908,8 +1908,18 @@ fn run_scripted_zsh_session(zshrc: &str, input_steps: Vec<(Duration, Vec<u8>)>) 
     let writer = thread::spawn(move || {
         for (delay, bytes) in input_steps {
             thread::sleep(delay);
-            stdin.write_all(&bytes).unwrap();
-            stdin.flush().unwrap();
+            if let Err(error) = stdin.write_all(&bytes) {
+                if error.kind() == std::io::ErrorKind::BrokenPipe {
+                    break;
+                }
+                panic!("failed to write scripted zsh input: {error}");
+            }
+            if let Err(error) = stdin.flush() {
+                if error.kind() == std::io::ErrorKind::BrokenPipe {
+                    break;
+                }
+                panic!("failed to flush scripted zsh input: {error}");
+            }
         }
     });
 
