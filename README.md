@@ -22,6 +22,11 @@ Launch support is intentionally narrow:
 
 `lmc` prints commands. It does not run them for you.
 
+## Demo
+
+- [Quick terminal demo](./docs/demo/demo.mp4)
+- [Full `lmc` workflow demo](./docs/demo/lmc-demo.mp4)
+
 ## Install
 
 From crates.io after release:
